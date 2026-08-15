@@ -1,0 +1,373 @@
+import { z } from "zod";
+import { authenticationRequired, errorResponse, internalError, notFound } from "@/lib/api";
+import { authenticateCaseRequest } from "@/lib/case-auth";
+import { invalidateDerivedResults, refreshDocumentReviewStatus } from "@/lib/case-workflow";
+import { extractDocument } from "@/lib/extraction";
+import { mutationGuard } from "@/lib/security";
+import { jsonResponse } from "@/lib/session";
+import {
+  appendAudit,
+  caseStorageUsage,
+  deleteDocumentObject,
+  getCase,
+  saveCase,
+  sha256,
+  storeDocument,
+} from "@/lib/storage";
+import type {
+  DeductionObservation,
+  DocumentRecord,
+  EvidenceRef,
+  FactRecord,
+  FindingModule,
+  PayPeriod,
+} from "@/lib/types";
+
+const MAX_FILE_BYTES = 12 * 1024 * 1024;
+const MAX_REQUEST_BYTES = MAX_FILE_BYTES + 512 * 1024;
+const MAX_CASE_BYTES = 100 * 1024 * 1024;
+const MAX_CASE_DOCUMENTS = 50;
+const TypeSchema = z.enum([
+  "LCA_CERTIFIED",
+  "OFFER_OR_EMPLOYMENT_LETTER",
+  "PAYSTUB",
+  "TIMESHEET",
+  "WORK_MESSAGE",
+  "LEAVE_NOTICE",
+  "TERMINATION_NOTICE",
+  "PETITION_SUPPORT_LETTER",
+  "OTHER",
+]);
+
+type Context = { params: Promise<{ caseId: string }> };
+
+function startsWith(bytes: Uint8Array, signature: number[]): boolean {
+  return bytes.length >= signature.length && signature.every((value, index) => bytes[index] === value);
+}
+
+function endsWith(bytes: Uint8Array, signature: number[]): boolean {
+  if (bytes.length < signature.length) return false;
+  const offset = bytes.length - signature.length;
+  return signature.every((value, index) => bytes[offset + index] === value);
+}
+
+function detectedMime(bytes: Uint8Array): string | null {
+  if (startsWith(bytes, [0x25, 0x50, 0x44, 0x46, 0x2d])) return "application/pdf";
+  if (startsWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return "image/png";
+  if (startsWith(bytes, [0xff, 0xd8, 0xff])) return "image/jpeg";
+  return null;
+}
+
+function validContainer(bytes: Uint8Array, mime: string): boolean {
+  if (mime === "image/jpeg") return bytes.length >= 32 && endsWith(bytes, [0xff, 0xd9]);
+  if (mime === "image/png") {
+    return bytes.length >= 45 && endsWith(bytes, [0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82]);
+  }
+  if (mime === "application/pdf") {
+    if (bytes.length < 100) return false;
+    const tail = new TextDecoder("latin1").decode(bytes.slice(Math.max(0, bytes.length - 4096)));
+    const eof = tail.lastIndexOf("%%EOF");
+    return eof >= 0 && /^[\s\0]*$/.test(tail.slice(eof + 5));
+  }
+  return false;
+}
+
+function extensionMatches(name: string, mime: string): boolean {
+  const extension = name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ?? "";
+  if (mime === "application/pdf") return extension === "pdf";
+  if (mime === "image/png") return extension === "png";
+  if (mime === "image/jpeg") return extension === "jpg" || extension === "jpeg";
+  return false;
+}
+
+function safeName(value: string): string {
+  return (
+    Array.from(value.normalize("NFKC"))
+      .map((character) => {
+        const code = character.charCodeAt(0);
+        return character === "/" || character === "\\" || code < 32 || code === 127 ? "-" : character;
+      })
+      .join("")
+      .replace(/\.{2,}/g, ".")
+      .slice(0, 120) || "document"
+  );
+}
+
+function affectsForFact(type: string): FindingModule[] {
+  if (type.includes("WAGE") || type === "PAY_FREQUENCY") {
+    return type.startsWith("LCA")
+      ? ["WAGE_BENCHMARK", "NONPRODUCTIVE_TIME"]
+      : ["WAGE_BENCHMARK"];
+  }
+  if (type.includes("WORKSITE") || type.includes("POSITION") || type.includes("EMPLOYER")) {
+    return ["EMPLOYMENT_FACTS"];
+  }
+  return ["EMPLOYMENT_FACTS"];
+}
+
+function evidence(
+  document: DocumentRecord,
+  page: number,
+  label: string,
+  text: string,
+  role: EvidenceRef["role"],
+): EvidenceRef {
+  return {
+    id: `span_${crypto.randomUUID()}`,
+    documentId: document.id,
+    documentName: document.name,
+    page,
+    label,
+    text,
+    role,
+  };
+}
+
+function deductionCategory(description: string): DeductionObservation["category"] {
+  if (/h\s*-?\s*1b|petition|filing|legal\s+fee|attorney/i.test(description)) {
+    return "PETITION_OR_LEGAL_FEE_REFERENCE";
+  }
+  if (/training|relocation/i.test(description)) return "TRAINING_OR_RELOCATION_REFERENCE";
+  if (/early\s+departure/i.test(description)) return "EARLY_DEPARTURE_REFERENCE";
+  return "UNKNOWN";
+}
+
+export async function POST(request: Request, context: Context) {
+  const identity = await authenticateCaseRequest(request);
+  if (!identity) return authenticationRequired(request);
+  const guarded = mutationGuard(request);
+  if (guarded) return guarded;
+  const declaredRequestBytes = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declaredRequestBytes) && declaredRequestBytes > MAX_REQUEST_BYTES) {
+    return errorResponse("FILE_TOO_LARGE", "Files must be 12 MB or smaller.", 413);
+  }
+
+  let storedDocument: DocumentRecord | null = null;
+  let activeCaseId = "";
+  try {
+    const { caseId } = await context.params;
+    activeCaseId = caseId;
+    const caseData = await getCase(caseId, identity.user.userId);
+    if (!caseData) return notFound();
+    const usage = await caseStorageUsage(caseId, identity.user.userId);
+    if (usage.documentCount >= MAX_CASE_DOCUMENTS) {
+      return errorResponse(
+        "CASE_QUOTA_EXCEEDED",
+        `A review can contain at most ${MAX_CASE_DOCUMENTS} documents.`,
+        409,
+      );
+    }
+
+    const form = await request.formData();
+    const file = form.get("file");
+    const typeResult = TypeSchema.safeParse(form.get("document_type"));
+    if (!(file instanceof File) || !typeResult.success || file.size < 1) {
+      return errorResponse(
+        "INVALID_REQUEST",
+        "Choose a supported non-empty document and identify its type.",
+        400,
+      );
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      return errorResponse("FILE_TOO_LARGE", "Files must be 12 MB or smaller.", 413);
+    }
+    if (usage.totalBytes + file.size > MAX_CASE_BYTES) {
+      return errorResponse(
+        "CASE_QUOTA_EXCEEDED",
+        "This review has reached its 100 MB private-storage limit.",
+        409,
+      );
+    }
+
+    const buffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    const actualMime = detectedMime(bytes);
+    if (!actualMime || !extensionMatches(file.name, actualMime)) {
+      return errorResponse(
+        "INVALID_UPLOAD_TYPE",
+        "Upload a PDF, PNG, or JPEG whose extension matches its contents.",
+        415,
+      );
+    }
+    if (!validContainer(bytes, actualMime)) {
+      return errorResponse(
+        "INVALID_UPLOAD_TYPE",
+        "The file is incomplete or has content after its expected end marker.",
+        400,
+      );
+    }
+    if (
+      file.type &&
+      file.type !== actualMime &&
+      !(file.type === "image/jpg" && actualMime === "image/jpeg")
+    ) {
+      return errorResponse(
+        "FILE_SIGNATURE_MISMATCH",
+        "The file contents do not match the declared file type.",
+        400,
+      );
+    }
+
+    if (actualMime === "application/pdf") {
+      const pdfText = new TextDecoder("latin1").decode(bytes);
+      if (/\/Encrypt\b/.test(pdfText)) {
+        return errorResponse(
+          "DOCUMENT_PASSWORD_REQUIRED",
+          "This PDF is protected. Create an unencrypted copy that you are authorized to use.",
+          400,
+        );
+      }
+      if (/\/(?:JavaScript|JS|EmbeddedFile|Launch|RichMedia)\b/.test(pdfText)) {
+        return errorResponse(
+          "DOCUMENT_ACTIVE_CONTENT",
+          "This PDF contains active or embedded content and cannot be processed safely.",
+          400,
+        );
+      }
+    }
+
+    const digest = await sha256(bytes);
+    if (caseData.documents.some((document) => document.hash === digest)) {
+      return errorResponse(
+        "DUPLICATE_DOCUMENT",
+        "This exact document is already in the review.",
+        409,
+      );
+    }
+
+    let extraction;
+    try {
+      // PDF.js may transfer/detach its input buffer. Give extraction an
+      // isolated copy so the original bytes remain intact for private storage.
+      extraction = await extractDocument(bytes.slice(), actualMime, typeResult.data);
+    } catch (error) {
+      if (error instanceof Error && error.message === "DOCUMENT_PAGE_LIMIT_EXCEEDED") {
+        return errorResponse("INVALID_REQUEST", "PDFs can contain at most 200 pages.", 400);
+      }
+      return errorResponse(
+        "INVALID_UPLOAD_TYPE",
+        "The document parser could not safely read this file. Export a fresh PDF or image and try again.",
+        422,
+      );
+    }
+
+    const documentId = `doc_${crypto.randomUUID()}`;
+    const now = new Date().toISOString();
+    const document: DocumentRecord = {
+      id: documentId,
+      name: safeName(file.name),
+      type: typeResult.data,
+      required: ["LCA_CERTIFIED", "OFFER_OR_EMPLOYMENT_LETTER", "PAYSTUB"].includes(
+        typeResult.data,
+      ),
+      status: "NEEDS_REVIEW",
+      pages: extraction.pageCount,
+      bytes: file.size,
+      contentType: actualMime,
+      hash: digest,
+      synthetic: caseData.mode === "SANDBOX",
+      uploadedAt: now,
+      objectKey: `private/cases/${caseData.id}/original/${documentId}/v1/source`,
+      note: "Validated, privately stored, and processed into review-only proposals.",
+      extraction: {
+        method: extraction.method,
+        characterCount: extraction.characterCount,
+        proposedFactCount: extraction.facts.length,
+        proposedPayPeriodCount: extraction.payPeriods.length,
+        proposedDeductionCount: extraction.deductions.length,
+        warnings: extraction.warnings,
+        completedAt: now,
+      },
+    };
+    storedDocument = document;
+    await storeDocument(caseData, document, buffer);
+    caseData.documents.push(document);
+
+    const proposedFacts: FactRecord[] = extraction.facts.map((candidate) => ({
+      id: `fact_${candidate.id}`,
+      type: candidate.type,
+      label: candidate.label,
+      rawValue: candidate.rawValue,
+      normalizedValue: candidate.normalizedValue,
+      confidence: candidate.confidence,
+      reviewStatus: "NEEDS_REVIEW",
+      affects: affectsForFact(candidate.type),
+      evidence: evidence(
+        document,
+        candidate.page,
+        candidate.label,
+        candidate.evidenceText,
+        candidate.type.startsWith("LCA") ? "benchmark" : "context",
+      ),
+      origin: "EXTRACTED",
+      originalRawValue: candidate.rawValue,
+    }));
+    caseData.facts.push(...proposedFacts);
+
+    const proposedPeriods: PayPeriod[] = extraction.payPeriods.map((candidate) => ({
+      id: `period_${candidate.id}`,
+      start: candidate.start,
+      end: candidate.end,
+      payDate: candidate.payDate,
+      ordinaryBaseCents: candidate.ordinaryBaseCents,
+      grossCents: candidate.grossCents,
+      complete: true,
+      comparable: true,
+      correctionStatus: "UNKNOWN",
+      reviewStatus: "NEEDS_REVIEW",
+      sourceDocumentId: document.id,
+      evidence: evidence(
+        document,
+        candidate.page,
+        "Proposed pay period",
+        candidate.evidenceText,
+        "observed",
+      ),
+    }));
+    caseData.payPeriods.push(...proposedPeriods);
+
+    const proposedDeductions: DeductionObservation[] = extraction.deductions.map((candidate) => ({
+      id: `deduction_${candidate.id}`,
+      description: candidate.description,
+      amountCents: candidate.amountCents,
+      date: candidate.date,
+      category: deductionCategory(candidate.description),
+      transactionStatus: "PAYROLL_OBSERVED",
+      descriptionConfidence: candidate.confidence,
+      reviewStatus: "NEEDS_REVIEW",
+      sourceDocumentId: document.id,
+      evidence: evidence(
+        document,
+        candidate.page,
+        "Proposed deduction line",
+        candidate.evidenceText,
+        "observed",
+      ),
+    }));
+    caseData.deductions.push(...proposedDeductions);
+
+    // A document with no pending proposals (e.g. an image needing manual
+    // transcription, or a PDF with no auto-detected fields) is ready as-is.
+    refreshDocumentReviewStatus(caseData, document.id);
+    invalidateDerivedResults(caseData);
+    await saveCase(caseData);
+    await appendAudit(caseData.id, "DOCUMENT_PROPOSALS_CREATED", {
+      documentId,
+      type: document.type,
+      pages: document.pages,
+      factCount: proposedFacts.length,
+      payPeriodCount: proposedPeriods.length,
+      deductionCount: proposedDeductions.length,
+    });
+    return jsonResponse({ document, extraction: document.extraction, case: caseData }, { status: 201 });
+  } catch (error) {
+    if (storedDocument && activeCaseId) {
+      try {
+        await deleteDocumentObject(activeCaseId, storedDocument.id, identity.user.userId);
+      } catch {
+        // A retention sweep also discovers case-prefix orphans.
+      }
+    }
+    return internalError(error);
+  }
+}

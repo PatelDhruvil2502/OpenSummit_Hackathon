@@ -1,0 +1,417 @@
+import { extractText } from "unpdf";
+
+export type ExtractionMethod = "PDF_TEXT_LAYER" | "IMAGE_REVIEW_REQUIRED";
+
+export interface ProposedFact {
+  id: string;
+  type: string;
+  label: string;
+  rawValue: string;
+  normalizedValue: string;
+  confidence: number;
+  page: number;
+  evidenceText: string;
+  groupId?: string;
+}
+
+export interface ProposedPayPeriod {
+  id: string;
+  start: string;
+  end: string;
+  payDate: string;
+  ordinaryBaseCents: number;
+  grossCents: number;
+  page: number;
+  evidenceText: string;
+  confidence: number;
+}
+
+export interface ProposedDeduction {
+  id: string;
+  description: string;
+  amountCents: number;
+  date: string;
+  page: number;
+  evidenceText: string;
+  confidence: number;
+}
+
+export interface DocumentExtraction {
+  method: ExtractionMethod;
+  pageCount: number;
+  characterCount: number;
+  facts: ProposedFact[];
+  payPeriods: ProposedPayPeriod[];
+  deductions: ProposedDeduction[];
+  warnings: string[];
+}
+
+const MAX_PAGES = 200;
+const MAX_PAGE_CHARACTERS = 40_000;
+const MAX_TOTAL_CHARACTERS = 300_000;
+
+function cleanText(value: string): string {
+  return value
+    .replaceAll("\u0000", "")
+    .replace(/[\t\f\v]+/g, " ")
+    .replace(/ +/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function excerpt(text: string, index: number, length: number): string {
+  const start = Math.max(0, text.lastIndexOf("\n", Math.max(0, index - 140)) + 1);
+  const nextLine = text.indexOf("\n", index + length);
+  const end = Math.min(text.length, nextLine < 0 ? index + length + 180 : nextLine);
+  return cleanText(text.slice(start, end)).slice(0, 360);
+}
+
+function dollarsToCents(value: string): number | null {
+  const normalized = value.replace(/[$,\s]/g, "");
+  if (!/^-?\d{1,12}(?:\.\d{1,2})?$/.test(normalized)) return null;
+  const negative = normalized.startsWith("-");
+  const [whole, decimal = ""] = normalized.replace("-", "").split(".");
+  const cents = Number(whole) * 100 + Number(decimal.padEnd(2, "0"));
+  if (!Number.isSafeInteger(cents)) return null;
+  return negative ? -cents : cents;
+}
+
+const MONTHS: Record<string, string> = {
+  jan: "01",
+  january: "01",
+  feb: "02",
+  february: "02",
+  mar: "03",
+  march: "03",
+  apr: "04",
+  april: "04",
+  may: "05",
+  jun: "06",
+  june: "06",
+  jul: "07",
+  july: "07",
+  aug: "08",
+  august: "08",
+  sep: "09",
+  sept: "09",
+  september: "09",
+  oct: "10",
+  october: "10",
+  nov: "11",
+  november: "11",
+  dec: "12",
+  december: "12",
+};
+
+function isoDate(value: string): string | null {
+  const input = value.trim().replace(/,$/, "");
+  let year: string;
+  let month: string;
+  let day: string;
+
+  const iso = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/.exec(input);
+  if (iso) [, year, month, day] = iso;
+  else {
+    const numeric = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/.exec(input);
+    if (numeric) [, month, day, year] = numeric;
+    else {
+      const named = /^([A-Za-z]{3,9})\s+(\d{1,2})\s+(\d{4})$/.exec(
+        input.replace(/,/g, ""),
+      );
+      if (!named) return null;
+      month = MONTHS[named[1].toLowerCase()];
+      day = named[2];
+      year = named[3];
+      if (!month) return null;
+    }
+  }
+
+  const candidate = `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+  const date = new Date(`${candidate}T00:00:00Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === candidate
+    ? candidate
+    : null;
+}
+
+function firstMatch(
+  pages: string[],
+  expression: RegExp,
+): { match: RegExpExecArray; page: number; text: string } | null {
+  for (let index = 0; index < pages.length; index += 1) {
+    expression.lastIndex = 0;
+    const match = expression.exec(pages[index]);
+    if (match) return { match, page: index + 1, text: pages[index] };
+  }
+  return null;
+}
+
+function proposedFact(
+  pages: string[],
+  expression: RegExp,
+  type: string,
+  label: string,
+  normalize: (value: string) => string | null,
+  confidence: number,
+): ProposedFact | null {
+  const result = firstMatch(pages, expression);
+  if (!result) return null;
+  const rawValue = cleanText(result.match[1]);
+  const normalizedValue = normalize(rawValue);
+  if (!normalizedValue) return null;
+  return {
+    id: crypto.randomUUID(),
+    type,
+    label,
+    rawValue,
+    normalizedValue,
+    confidence,
+    page: result.page,
+    evidenceText: excerpt(result.text, result.match.index, result.match[0].length),
+  };
+}
+
+function moneyFact(
+  pages: string[],
+  expression: RegExp,
+  type: string,
+  label: string,
+  confidence: number,
+): ProposedFact | null {
+  return proposedFact(
+    pages,
+    expression,
+    type,
+    label,
+    (value) => {
+      const cents = dollarsToCents(value);
+      return cents === null ? null : String(Math.abs(cents));
+    },
+    confidence,
+  );
+}
+
+function textFact(
+  pages: string[],
+  expression: RegExp,
+  type: string,
+  label: string,
+  confidence: number,
+): ProposedFact | null {
+  return proposedFact(
+    pages,
+    expression,
+    type,
+    label,
+    (value) => cleanText(value).slice(0, 180) || null,
+    confidence,
+  );
+}
+
+function extractLcaFacts(pages: string[]): ProposedFact[] {
+  return [
+    moneyFact(
+      pages,
+      /(?:rate\s+of\s+pay|wage(?:\s+rate)?(?:\s+offered)?|offered\s+wage)[^\n$\d]{0,70}\$?\s*([\d,]+(?:\.\d{1,2})?)(?=[^\n]{0,30}(?:year|annual))/i,
+      "LCA_WAGE_ANNUAL_CENTS",
+      "LCA-listed annual wage",
+      0.92,
+    ),
+    textFact(
+      pages,
+      /(?:place\s+of\s+employment|worksite(?:\s+address)?|work\s+location)\s*[:-]?\s*([^\n]{3,180})/i,
+      "LCA_WORKSITE",
+      "LCA worksite",
+      0.82,
+    ),
+    textFact(
+      pages,
+      /(?:employer(?:'s)?(?:\s+legal\s+business)?\s+name|petitioning\s+employer|petitioner)\s*[:-]?\s*([^\n]{2,160})/i,
+      "EMPLOYER_NAME",
+      "Petitioning employer",
+      0.78,
+    ),
+    textFact(
+      pages,
+      /(?:job\s+title|position\s+title|occupation)\s*[:-]?\s*([^\n]{2,140})/i,
+      "POSITION_TITLE",
+      "Position",
+      0.75,
+    ),
+    proposedFact(
+      pages,
+      /(?:pay\s+frequency|paid)\s*[:-]?\s*(weekly|biweekly|bi-weekly|semi-monthly|semimonthly|monthly)/i,
+      "PAY_FREQUENCY",
+      "Pay frequency",
+      (value) => value.toUpperCase().replace("BI-WEEKLY", "BIWEEKLY").replace("SEMIMONTHLY", "SEMI-MONTHLY"),
+      0.86,
+    ),
+  ].filter((value): value is ProposedFact => Boolean(value));
+}
+
+function extractOfferFacts(pages: string[]): ProposedFact[] {
+  return [
+    moneyFact(
+      pages,
+      /(?:annual\s+base\s+salary|annual\s+salary|base\s+salary|salary)[^\n$\d]{0,80}\$?\s*([\d,]+(?:\.\d{1,2})?)/i,
+      "OFFER_WAGE_ANNUAL_CENTS",
+      "Offer annual base wage",
+      0.88,
+    ),
+    textFact(
+      pages,
+      /(?:primary\s+work\s+location|work\s+location|worksite|place\s+of\s+employment)\s*[:-]?\s*([^\n]{3,180})/i,
+      "OFFER_WORKSITE",
+      "Offer worksite",
+      0.8,
+    ),
+    textFact(
+      pages,
+      /(?:position|job\s+title|role)\s*[:-]?\s*([^\n]{2,140})/i,
+      "POSITION_TITLE",
+      "Offer position",
+      0.7,
+    ),
+    proposedFact(
+      pages,
+      /(?:pay\s+frequency|paid)\s*[:-]?\s*(weekly|biweekly|bi-weekly|semi-monthly|semimonthly|monthly)/i,
+      "PAY_FREQUENCY",
+      "Pay frequency",
+      (value) => value.toUpperCase().replace("BI-WEEKLY", "BIWEEKLY").replace("SEMIMONTHLY", "SEMI-MONTHLY"),
+      0.86,
+    ),
+  ].filter((value): value is ProposedFact => Boolean(value));
+}
+
+const DATE_VALUE =
+  "(?:\\d{4}[-/.]\\d{1,2}[-/.]\\d{1,2}|\\d{1,2}[-/.]\\d{1,2}[-/.]\\d{4}|[A-Za-z]{3,9}\\s+\\d{1,2},?\\s+\\d{4})";
+
+function extractPayPeriods(pages: string[]): ProposedPayPeriod[] {
+  const periods: ProposedPayPeriod[] = [];
+  pages.forEach((pageText, pageIndex) => {
+    const range = new RegExp(
+      `(?:pay\\s+period|period)(?:\\s+(?:begin|start|from))?\\s*[:\\-]?\\s*(${DATE_VALUE})\\s*(?:through|to|[-–—])\\s*(${DATE_VALUE})`,
+      "i",
+    ).exec(pageText);
+    const base = /(?:regular\s+(?:salary|pay|earnings)|ordinary\s+base|base\s+pay)\s*[:-]?\s*\$?\s*(-?[\d,]+(?:\.\d{1,2})?)/i.exec(
+      pageText,
+    );
+    if (!range || !base) return;
+    const start = isoDate(range[1]);
+    const end = isoDate(range[2]);
+    const ordinaryBase = dollarsToCents(base[1]);
+    if (!start || !end || ordinaryBase === null || start > end) return;
+    const payDateMatch = new RegExp(`(?:pay\\s+date|check\\s+date)\\s*[:\\-]?\\s*(${DATE_VALUE})`, "i").exec(
+      pageText,
+    );
+    const grossMatch = /(?:gross\s+(?:pay|earnings)|gross)\s*[:-]?\s*\$?\s*(-?[\d,]+(?:\.\d{1,2})?)/i.exec(
+      pageText,
+    );
+    const payDate = payDateMatch ? isoDate(payDateMatch[1]) : null;
+    const gross = grossMatch ? dollarsToCents(grossMatch[1]) : null;
+    periods.push({
+      id: crypto.randomUUID(),
+      start,
+      end,
+      payDate: payDate ?? end,
+      ordinaryBaseCents: Math.abs(ordinaryBase),
+      grossCents: Math.abs(gross ?? ordinaryBase),
+      page: pageIndex + 1,
+      evidenceText: excerpt(pageText, range.index, Math.max(range[0].length, base[0].length)),
+      confidence: payDate && gross !== null ? 0.9 : 0.82,
+    });
+  });
+  return periods;
+}
+
+function extractDeductions(pages: string[]): ProposedDeduction[] {
+  const deductions: ProposedDeduction[] = [];
+  const relevant = /(?:h\s*-?\s*1b|petition|filing|legal\s+fee|attorney|training|relocation|early\s+departure)/i;
+  pages.forEach((pageText, pageIndex) => {
+    const lines = pageText.split("\n");
+    lines.forEach((line) => {
+      if (!relevant.test(line)) return;
+      const amount = /(?:-\s*\$\s*|\$\s*-?)([\d,]+(?:\.\d{1,2})?)/.exec(line);
+      if (!amount) return;
+      const cents = dollarsToCents(amount[1]);
+      if (cents === null || cents === 0) return;
+      const dateMatch = new RegExp(DATE_VALUE, "i").exec(pageText);
+      deductions.push({
+        id: crypto.randomUUID(),
+        description: cleanText(line.replace(amount[0], "")).slice(0, 180) || "Fee-related line",
+        amountCents: Math.abs(cents),
+        date: dateMatch ? isoDate(dateMatch[0]) ?? "" : "",
+        page: pageIndex + 1,
+        evidenceText: cleanText(line).slice(0, 360),
+        confidence: 0.8,
+      });
+    });
+  });
+  return deductions;
+}
+
+export async function extractDocument(
+  bytes: Uint8Array,
+  contentType: string,
+  documentType: string,
+): Promise<DocumentExtraction> {
+  if (contentType !== "application/pdf") {
+    return {
+      method: "IMAGE_REVIEW_REQUIRED",
+      pageCount: 1,
+      characterCount: 0,
+      facts: [],
+      payPeriods: [],
+      deductions: [],
+      warnings: [
+        "This image needs visual transcription. WageShield did not guess values from pixels.",
+      ],
+    };
+  }
+
+  const result = await extractText(bytes, { mergePages: false });
+  if (result.totalPages > MAX_PAGES) throw new Error("DOCUMENT_PAGE_LIMIT_EXCEEDED");
+  let remaining = MAX_TOTAL_CHARACTERS;
+  const pages = result.text.map((page) => {
+    const cleaned = cleanText(page).slice(0, Math.min(MAX_PAGE_CHARACTERS, remaining));
+    remaining -= cleaned.length;
+    return cleaned;
+  });
+  const characterCount = pages.reduce((total, page) => total + page.length, 0);
+  const warnings: string[] = [];
+  if (characterCount < 40) {
+    warnings.push(
+      "No usable text layer was found. Review the document visually and enter only verified values.",
+    );
+  }
+  if (remaining === 0) {
+    warnings.push("Extracted text reached the safety limit; confirm that later pages were not omitted.");
+  }
+
+  let facts: ProposedFact[] = [];
+  let payPeriods: ProposedPayPeriod[] = [];
+  let deductions: ProposedDeduction[] = [];
+  if (documentType === "LCA_CERTIFIED") facts = extractLcaFacts(pages);
+  if (documentType === "OFFER_OR_EMPLOYMENT_LETTER") facts = extractOfferFacts(pages);
+  if (documentType === "PAYSTUB") {
+    payPeriods = extractPayPeriods(pages);
+    deductions = extractDeductions(pages);
+  }
+
+  if (!facts.length && !payPeriods.length && !deductions.length && characterCount >= 40) {
+    warnings.push(
+      "Text was readable, but no supported material fields were identified automatically. Manual review is required.",
+    );
+  }
+
+  return {
+    method: "PDF_TEXT_LAYER",
+    pageCount: result.totalPages,
+    characterCount,
+    facts,
+    payPeriods,
+    deductions,
+    warnings,
+  };
+}
+
+export const extractionInternals = { cleanText, dollarsToCents, isoDate };
