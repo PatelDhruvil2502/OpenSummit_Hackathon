@@ -57,6 +57,32 @@ test("extracts a pay period and a fee candidate from readable payroll", async ()
   assert.equal(extraction.deductions[0]?.amountCents, 150_000);
 });
 
+test("extracts annual wages written as dollars per year", async () => {
+  const bytes = await textPdf([
+    "Wage offered $95,000.00 per year",
+    "Place of Employment: Austin, Texas",
+  ]);
+  const extraction = await extractDocument(bytes, "application/pdf", "LCA_CERTIFIED");
+  assert.equal(
+    extraction.facts.find((fact) => fact.type === "LCA_WAGE_ANNUAL_CENTS")?.normalizedValue,
+    "9500000",
+  );
+});
+
+test("infers biweekly frequency from pay period length", async () => {
+  const bytes = await textPdf([
+    "Period Beginning: 04/13/2026",
+    "Period Ending: 04/26/2026",
+    "Regular Earnings $3,769.23",
+  ]);
+  const extraction = await extractDocument(bytes, "application/pdf", "PAYSTUB");
+  assert.equal(extraction.payPeriods[0]?.ordinaryBaseCents, 376_923);
+  assert.equal(
+    extraction.facts.find((fact) => fact.type === "PAY_FREQUENCY")?.normalizedValue,
+    "BIWEEKLY",
+  );
+});
+
 test("images explicitly require visual review", async () => {
   const extraction = await extractDocument(new Uint8Array([0xff, 0xd8, 0xff]), "image/jpeg", "PAYSTUB");
   assert.equal(extraction.method, "IMAGE_REVIEW_REQUIRED");

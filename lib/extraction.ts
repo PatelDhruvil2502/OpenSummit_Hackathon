@@ -207,79 +207,150 @@ function textFact(
   );
 }
 
+function firstMoneyFact(
+  pages: string[],
+  expressions: RegExp[],
+  type: string,
+  label: string,
+  confidence: number,
+): ProposedFact | null {
+  for (const expression of expressions) {
+    const fact = moneyFact(pages, expression, type, label, confidence);
+    if (fact) return fact;
+  }
+  return null;
+}
+
+function firstTextFact(
+  pages: string[],
+  expressions: RegExp[],
+  type: string,
+  label: string,
+  confidence: number,
+): ProposedFact | null {
+  for (const expression of expressions) {
+    const fact = textFact(pages, expression, type, label, confidence);
+    if (fact) return fact;
+  }
+  return null;
+}
+
+function normalizePayFrequency(value: string): string | null {
+  const normalized = cleanText(value).toUpperCase().replaceAll("_", " ").replaceAll("-", "");
+  if (/BI\s*WEEK/.test(normalized) || normalized.includes("BIWEEK")) return "BIWEEKLY";
+  if (/SEMI\s*MONTH/.test(normalized) || normalized.includes("SEMIMONTH")) return "SEMI-MONTHLY";
+  if (normalized.includes("WEEK")) return "WEEKLY";
+  if (normalized.includes("MONTH")) return "MONTHLY";
+  if (normalized.includes("YEAR") || normalized.includes("ANNUAL")) return "ANNUAL";
+  return null;
+}
+
+function payFrequencyFact(pages: string[]): ProposedFact | null {
+  return proposedFact(
+    pages,
+    /(?:pay\s+frequency|paid|compensation\s+schedule|salary\s+paid)\s*[:-]?\s*(weekly|biweekly|bi-weekly|bi weekly|semi-monthly|semimonthly|semi monthly|monthly|annually|annual)/i,
+    "PAY_FREQUENCY",
+    "Pay frequency",
+    normalizePayFrequency,
+    0.86,
+  );
+}
+
+function uniqueFacts(facts: Array<ProposedFact | null>): ProposedFact[] {
+  const seen = new Set<string>();
+  const result: ProposedFact[] = [];
+  for (const fact of facts) {
+    if (!fact) continue;
+    const key = `${fact.type}:${fact.normalizedValue}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(fact);
+  }
+  return result;
+}
+
 function extractLcaFacts(pages: string[]): ProposedFact[] {
-  return [
-    moneyFact(
+  return uniqueFacts([
+    firstMoneyFact(
       pages,
-      /(?:rate\s+of\s+pay|wage(?:\s+rate)?(?:\s+offered)?|offered\s+wage)[^\n$\d]{0,70}\$?\s*([\d,]+(?:\.\d{1,2})?)(?=[^\n]{0,30}(?:year|annual))/i,
+      [
+        /(?:rate\s+of\s+pay|wage(?:\s+rate)?(?:\s+offered)?|offered\s+wage|prevailing\s+wage|lca\s+wage)[^\n$\d]{0,80}\$?\s*([\d,]+(?:\.\d{1,2})?)(?=[^\n]{0,40}(?:year|annual|annum))/i,
+        /\$\s*([\d,]+(?:\.\d{1,2})?)\s*(?:per\s+year|\/\s*year|annually|per\s+annum)/i,
+        /(?:annual\s+wage|yearly\s+wage|wage\s+offered)[^\n$\d]{0,40}\$?\s*([\d,]+(?:\.\d{1,2})?)/i,
+      ],
       "LCA_WAGE_ANNUAL_CENTS",
       "LCA-listed annual wage",
       0.92,
     ),
-    textFact(
+    firstTextFact(
       pages,
-      /(?:place\s+of\s+employment|worksite(?:\s+address)?|work\s+location)\s*[:-]?\s*([^\n]{3,180})/i,
+      [
+        /(?:place\s+of\s+employment|worksite(?:\s+address)?|work\s+location|employment\s+location)\s*[:-]?\s*([^\n]{3,180})/i,
+      ],
       "LCA_WORKSITE",
       "LCA worksite",
       0.82,
     ),
-    textFact(
+    firstTextFact(
       pages,
-      /(?:employer(?:'s)?(?:\s+legal\s+business)?\s+name|petitioning\s+employer|petitioner)\s*[:-]?\s*([^\n]{2,160})/i,
+      [
+        /(?:employer(?:'s)?(?:\s+legal\s+business)?\s+name|petitioning\s+employer|petitioner)\s*[:-]?\s*([^\n]{2,160})/i,
+      ],
       "EMPLOYER_NAME",
       "Petitioning employer",
       0.78,
     ),
-    textFact(
+    firstTextFact(
       pages,
-      /(?:job\s+title|position\s+title|occupation)\s*[:-]?\s*([^\n]{2,140})/i,
+      [/(?:job\s+title|position\s+title|soc\s+title|occupation)\s*[:-]?\s*([^\n]{2,140})/i],
       "POSITION_TITLE",
       "Position",
       0.75,
     ),
-    proposedFact(
-      pages,
-      /(?:pay\s+frequency|paid)\s*[:-]?\s*(weekly|biweekly|bi-weekly|semi-monthly|semimonthly|monthly)/i,
-      "PAY_FREQUENCY",
-      "Pay frequency",
-      (value) => value.toUpperCase().replace("BI-WEEKLY", "BIWEEKLY").replace("SEMIMONTHLY", "SEMI-MONTHLY"),
-      0.86,
-    ),
-  ].filter((value): value is ProposedFact => Boolean(value));
+    payFrequencyFact(pages),
+  ]);
 }
 
 function extractOfferFacts(pages: string[]): ProposedFact[] {
-  return [
-    moneyFact(
+  return uniqueFacts([
+    firstMoneyFact(
       pages,
-      /(?:annual\s+base\s+salary|annual\s+salary|base\s+salary|salary)[^\n$\d]{0,80}\$?\s*([\d,]+(?:\.\d{1,2})?)/i,
+      [
+        /(?:annual\s+base\s+salary|annual\s+salary|base\s+salary|yearly\s+salary|base\s+compensation)[^\n$\d]{0,80}\$?\s*([\d,]+(?:\.\d{1,2})?)/i,
+        /\$\s*([\d,]+(?:\.\d{1,2})?)\s*(?:per\s+year|\/\s*year|annually)/i,
+      ],
       "OFFER_WAGE_ANNUAL_CENTS",
       "Offer annual base wage",
       0.88,
     ),
-    textFact(
+    firstTextFact(
       pages,
-      /(?:primary\s+work\s+location|work\s+location|worksite|place\s+of\s+employment)\s*[:-]?\s*([^\n]{3,180})/i,
+      [
+        /(?:primary\s+work\s+location|work\s+location|worksite|place\s+of\s+employment|office\s+location)\s*[:-]?\s*([^\n]{3,180})/i,
+      ],
       "OFFER_WORKSITE",
       "Offer worksite",
       0.8,
     ),
-    textFact(
+    firstTextFact(
       pages,
-      /(?:position|job\s+title|role)\s*[:-]?\s*([^\n]{2,140})/i,
+      [/(?:position|job\s+title|role)\s*[:-]?\s*([^\n]{2,140})/i],
       "POSITION_TITLE",
       "Offer position",
       0.7,
     ),
-    proposedFact(
-      pages,
-      /(?:pay\s+frequency|paid)\s*[:-]?\s*(weekly|biweekly|bi-weekly|semi-monthly|semimonthly|monthly)/i,
-      "PAY_FREQUENCY",
-      "Pay frequency",
-      (value) => value.toUpperCase().replace("BI-WEEKLY", "BIWEEKLY").replace("SEMIMONTHLY", "SEMI-MONTHLY"),
-      0.86,
-    ),
-  ].filter((value): value is ProposedFact => Boolean(value));
+    payFrequencyFact(pages),
+  ]);
+}
+
+function frequencyFromPeriodDays(start: string, end: string): string | null {
+  const days = Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / 86_400_000);
+  if (!Number.isFinite(days) || days <= 0) return null;
+  if (days <= 8) return "WEEKLY";
+  if (days <= 16) return "BIWEEKLY";
+  if (days <= 20) return "SEMI-MONTHLY";
+  if (days <= 35) return "MONTHLY";
+  return null;
 }
 
 const DATE_VALUE =
@@ -288,13 +359,29 @@ const DATE_VALUE =
 function extractPayPeriods(pages: string[]): ProposedPayPeriod[] {
   const periods: ProposedPayPeriod[] = [];
   pages.forEach((pageText, pageIndex) => {
-    const range = new RegExp(
-      `(?:pay\\s+period|period)(?:\\s+(?:begin|start|from))?\\s*[:\\-]?\\s*(${DATE_VALUE})\\s*(?:through|to|[-–—])\\s*(${DATE_VALUE})`,
-      "i",
-    ).exec(pageText);
-    const base = /(?:regular\s+(?:salary|pay|earnings)|ordinary\s+base|base\s+pay)\s*[:-]?\s*\$?\s*(-?[\d,]+(?:\.\d{1,2})?)/i.exec(
-      pageText,
-    );
+    const range =
+      new RegExp(
+        `(?:pay\\s+period|period)(?:\\s+(?:begin|start|from))?\\s*[:\\-]?\\s*(${DATE_VALUE})\\s*(?:through|to|[-–—])\\s*(${DATE_VALUE})`,
+        "i",
+      ).exec(pageText) ??
+      (() => {
+        const start = new RegExp(
+          `(?:period\\s+beginning|begin(?:ning)?\\s+date|start\\s+date|period\\s+start)\\s*[:\\-]?\\s*(${DATE_VALUE})`,
+          "i",
+        ).exec(pageText);
+        const end = new RegExp(
+          `(?:period\\s+ending|end(?:ing)?\\s+date|period\\s+end)\\s*[:\\-]?\\s*(${DATE_VALUE})`,
+          "i",
+        ).exec(pageText);
+        if (!start || !end) return null;
+        return Object.assign([start[0], start[1], end[1]] as unknown as RegExpExecArray, {
+          index: start.index,
+        });
+      })();
+    const base =
+      /(?:regular\s+(?:salary|pay|earnings)|ordinary\s+base|base\s+pay|regular\s+earnings)\s*[:-]?\s*\$?\s*(-?[\d,]+(?:\.\d{1,2})?)/i.exec(
+        pageText,
+      ) ?? /(?:net\s+pay|gross\s+pay)\s*[:-]?\s*\$?\s*(-?[\d,]+(?:\.\d{1,2})?)/i.exec(pageText);
     if (!range || !base) return;
     const start = isoDate(range[1]);
     const end = isoDate(range[2]);
@@ -316,7 +403,7 @@ function extractPayPeriods(pages: string[]): ProposedPayPeriod[] {
       ordinaryBaseCents: Math.abs(ordinaryBase),
       grossCents: Math.abs(gross ?? ordinaryBase),
       page: pageIndex + 1,
-      evidenceText: excerpt(pageText, range.index, Math.max(range[0].length, base[0].length)),
+      evidenceText: excerpt(pageText, range.index ?? 0, 80),
       confidence: payDate && gross !== null ? 0.9 : 0.82,
     });
   });
@@ -391,10 +478,46 @@ export async function extractDocument(
   let payPeriods: ProposedPayPeriod[] = [];
   let deductions: ProposedDeduction[] = [];
   if (documentType === "LCA_CERTIFIED") facts = extractLcaFacts(pages);
-  if (documentType === "OFFER_OR_EMPLOYMENT_LETTER") facts = extractOfferFacts(pages);
-  if (documentType === "PAYSTUB") {
+  else if (documentType === "OFFER_OR_EMPLOYMENT_LETTER") facts = extractOfferFacts(pages);
+  else if (documentType === "PAYSTUB" || documentType === "TIMESHEET") {
     payPeriods = extractPayPeriods(pages);
     deductions = extractDeductions(pages);
+    facts = uniqueFacts([payFrequencyFact(pages)]);
+  } else if (documentType === "WORK_MESSAGE") {
+    facts = uniqueFacts([
+      firstTextFact(
+        pages,
+        [
+          /(?:report(?:ing)?\s+to|relocate(?:d)?\s+to|work\s+from|new\s+worksite|worksite)\s*[:-]?\s*([^\n]{3,180})/i,
+        ],
+        "CURRENT_WORKSITE",
+        "Instructed worksite",
+        0.74,
+      ),
+    ]);
+  } else {
+    facts = uniqueFacts([...extractLcaFacts(pages), ...extractOfferFacts(pages)]);
+    payPeriods = extractPayPeriods(pages);
+    deductions = extractDeductions(pages);
+  }
+
+  if (
+    !facts.some((fact) => fact.type === "PAY_FREQUENCY") &&
+    payPeriods[0]
+  ) {
+    const inferred = frequencyFromPeriodDays(payPeriods[0].start, payPeriods[0].end);
+    if (inferred) {
+      facts.push({
+        id: crypto.randomUUID(),
+        type: "PAY_FREQUENCY",
+        label: "Pay frequency inferred from pay period length",
+        rawValue: inferred,
+        normalizedValue: inferred,
+        confidence: 0.7,
+        page: payPeriods[0].page,
+        evidenceText: payPeriods[0].evidenceText,
+      });
+    }
   }
 
   if (!facts.length && !payPeriods.length && !deductions.length && characterCount >= 40) {

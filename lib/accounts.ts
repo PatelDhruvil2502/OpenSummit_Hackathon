@@ -264,6 +264,75 @@ export async function clearAuthRateLimit(request: Request, email: string): Promi
     .run();
 }
 
+export async function getAccountById(userId: string): Promise<AuthenticatedUser | null> {
+  await ensureStorage();
+  const row = await database()
+    .prepare("SELECT id, email, display_name FROM accounts WHERE id = ? LIMIT 1")
+    .bind(userId)
+    .first<{ id: string; email: string; display_name: string }>();
+  return row ? toUser({ id: row.id, email: row.email, displayName: row.display_name }) : null;
+}
+
+export async function updateAccount(
+  userId: string,
+  input: {
+    currentPassword: string;
+    displayName: string;
+    email: string;
+    newPassword?: string;
+  },
+): Promise<
+  { ok: true; user: AuthenticatedUser } | { ok: false; reason: "invalid" | "password" | "exists" | "missing" }
+> {
+  const name = input.displayName.trim().slice(0, 100);
+  const email = normalizeEmail(input.email);
+  const newPassword = input.newPassword?.trim() ? input.newPassword : undefined;
+  if (!name || !validEmail(email) || !input.currentPassword) return { ok: false, reason: "invalid" };
+  if (newPassword !== undefined && !validPassword(newPassword)) return { ok: false, reason: "invalid" };
+
+  await ensureStorage();
+  const row = await database()
+    .prepare(
+      "SELECT id, email, display_name, password_hash FROM accounts WHERE id = ? LIMIT 1",
+    )
+    .bind(userId)
+    .first<{ id: string; email: string; display_name: string; password_hash: string }>();
+  if (!row) return { ok: false, reason: "missing" };
+  if (!(await verifyPassword(input.currentPassword, row.password_hash))) {
+    return { ok: false, reason: "password" };
+  }
+
+  const passwordHash = newPassword ? await hashPassword(newPassword) : row.password_hash;
+  try {
+    await database()
+      .prepare(
+        `UPDATE accounts
+          SET email = ?, display_name = ?, password_hash = ?, updated_at = ?
+          WHERE id = ?`,
+      )
+      .bind(email, name, passwordHash, new Date().toISOString(), userId)
+      .run();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (/unique|constraint/i.test(message)) return { ok: false, reason: "exists" };
+    throw error;
+  }
+  return { ok: true, user: toUser({ id: userId, email, displayName: name }) };
+}
+
+export async function revokeOtherSessions(cookieHeader: string | null, userId: string): Promise<void> {
+  const token = readAuthToken(cookieHeader);
+  await ensureStorage();
+  if (!token) {
+    await database().prepare("DELETE FROM auth_sessions WHERE account_id = ?").bind(userId).run();
+    return;
+  }
+  await database()
+    .prepare("DELETE FROM auth_sessions WHERE account_id = ? AND token_hash != ?")
+    .bind(userId, await sha256Hex(token))
+    .run();
+}
+
 export async function getAccountFromCookie(cookieHeader: string | null): Promise<AuthenticatedUser | null> {
   const token = readAuthToken(cookieHeader);
   if (!token) return null;

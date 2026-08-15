@@ -648,7 +648,7 @@ function DocumentsTab({
       return;
     }
     if (!file) {
-      setError("Choose a synthetic PDF, PNG, or JPEG to upload.");
+      setError("Choose a PDF, PNG, or JPEG to upload.");
       return;
     }
     setUploading(true);
@@ -657,12 +657,15 @@ function DocumentsTab({
       const form = new FormData();
       form.set("file", file);
       form.set("document_type", type);
-      form.set("is_synthetic", "true");
       const response = await apiFetch(`/api/v1/cases/${caseData.id}/uploads`, { method: "POST", body: form });
       const payload = await parseApi<{ case: CasePayload }>(response);
       setCaseData(payload.case);
       setFile(null);
-      setToast("Document validated and stored in this private case.");
+      setToast(
+        payload.case.findings?.length
+          ? "File stored. Comparison results were generated from values read in this document set."
+          : "File stored. Values were read from the document text and attached to this review.",
+      );
       const input = document.getElementById("document-file") as HTMLInputElement | null;
       if (input) input.value = "";
     } catch (caught) {
@@ -707,11 +710,11 @@ function DocumentsTab({
 
       <form className="upload-panel" onSubmit={upload}>
         <div className="upload-icon"><UploadCloud size={23} /></div>
-        <div className="upload-copy"><strong>Add a fictional test document</strong><p>PDF, PNG, or JPEG · 12 MB maximum · encrypted or active PDFs are rejected</p></div>
+        <div className="upload-copy"><strong>Add an employment record</strong><p>PDF, PNG, or JPEG · 12 MB maximum · encrypted or active PDFs are rejected. Findings use values read from these files.</p></div>
         <label className="upload-type"><span className="sr-only">Document type</span><select value={type} onChange={(event) => setType(event.target.value as DocumentType)}>{Object.entries(DOCUMENT_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         <label className="file-picker"><input id="document-file" type="file" accept="application/pdf,image/png,image/jpeg" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><span>{file ? file.name : "Choose file"}</span></label>
         <button className="button button-primary" type="submit" disabled={uploading || writesAreLocked}>{uploading ? <LoaderCircle className="spin" size={15} /> : <UploadCloud size={15} />}{uploading ? "Validating…" : "Upload"}</button>
-        <small className="upload-notice"><ShieldCheck size={12} /> Hosted demo accepts synthetic records only. File contents never enter standard application logs.</small>
+        <small className="upload-notice"><ShieldCheck size={12} /> File text is processed on this server. Original files stay in private storage and do not enter application logs.</small>
       </form>
 
       <section className="document-inventory">
@@ -1135,7 +1138,7 @@ function FactsTab({
           )}
         </div>
       ) : (
-        <div className="empty-panel compact"><FileSearch size={23} /><strong>No reviewed facts yet</strong><p>Add synthetic documents, then use the structured review form to enter only the values needed for the selected checks.</p></div>
+        <div className="empty-panel compact"><FileSearch size={23} /><strong>No file-derived facts yet</strong><p>Upload an LCA, offer letter, and paystubs. WageShield reads the text layer and uses those values in the four comparisons.</p></div>
       )}
     </>
   );
@@ -1174,11 +1177,11 @@ function ManualFactsForm({ caseData, setCaseData, setError, setToast, writesAreL
   }
   return (
     <section className="manual-facts-card">
-      <button type="button" className="manual-facts-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}><span><SlidersHorizontal size={17} /><span><strong>Manual review fallback</strong><small>Enter only facts you have verified against the synthetic records.</small></span></span><ChevronDown size={17} /></button>
+      <button type="button" className="manual-facts-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}><span><SlidersHorizontal size={17} /><span><strong>Correct a value from a file</strong><small>Use this only when the PDF text layer missed or misread a number.</small></span></span><ChevronDown size={17} /></button>
       {open && (
         <form className="manual-facts-form" onSubmit={submit}>
-          <fieldset><legend>Employment and wage</legend><div className="form-grid three"><label className="field-label">Worker name<input name="worker_name" defaultValue={caseData.workerName} /></label><label className="field-label">Employer name<input name="employer_name" defaultValue={caseData.employerName} /></label><label className="field-label">Position<input name="position" defaultValue={caseData.position} /></label></div><div className="form-grid three"><label className="field-label">LCA annual wage ($)<input name="lca_annual_dollars" inputMode="decimal" placeholder="120000.00" /></label><label className="field-label">Offer annual wage ($)<input name="offer_annual_dollars" inputMode="decimal" placeholder="120000.00" /></label><label className="field-label">Observed biweekly base ($)<input name="observed_biweekly_dollars" inputMode="decimal" placeholder="3769.23" /></label></div><div className="form-grid three"><label className="field-label">Period start<input type="date" name="pay_period_start" /></label><label className="field-label">Period end<input type="date" name="pay_period_end" /></label><label className="field-label">Pay date<input type="date" name="pay_date" /></label></div></fieldset>
-          <fieldset><legend>Location and deduction</legend><div className="form-grid three"><label className="field-label">LCA worksite<input name="lca_worksite" placeholder="Indianapolis, Indiana" /></label><label className="field-label">Offer worksite<input name="offer_worksite" placeholder="Indianapolis, Indiana" /></label><label className="field-label">Current instruction<input name="current_worksite" placeholder="Columbus, Ohio" /></label></div><div className="form-grid three"><label className="field-label">Worksite qualifier<select name="worksite_qualifier" defaultValue="UNKNOWN"><option value="UNKNOWN">Duration unknown</option><option value="ONGOING">Ongoing</option><option value="TEMPORARY">Temporary travel</option><option value="REMOTE">Remote</option></select></label><label className="field-label">Deduction description<input name="deduction_description" placeholder="H-1B filing/legal fee recovery" /></label><label className="field-label">Deduction amount ($)<input name="deduction_dollars" inputMode="decimal" placeholder="1500.00" /></label></div><div className="form-grid three"><label className="field-label">Deduction date<input type="date" name="deduction_date" /></label></div></fieldset>
+          <fieldset><legend>Employment and wage</legend><div className="form-grid three"><label className="field-label">Worker name<input name="worker_name" defaultValue={caseData.workerName} /></label><label className="field-label">Employer name<input name="employer_name" defaultValue={caseData.employerName} /></label><label className="field-label">Position<input name="position" defaultValue={caseData.position} /></label></div><div className="form-grid three"><label className="field-label">LCA annual wage ($)<input name="lca_annual_dollars" inputMode="decimal" placeholder="Amount from the LCA" /></label><label className="field-label">Offer annual wage ($)<input name="offer_annual_dollars" inputMode="decimal" placeholder="Amount from the LCA" /></label><label className="field-label">Observed biweekly base ($)<input name="observed_biweekly_dollars" inputMode="decimal" placeholder="Ordinary base on the stub" /></label></div><div className="form-grid three"><label className="field-label">Period start<input type="date" name="pay_period_start" /></label><label className="field-label">Period end<input type="date" name="pay_period_end" /></label><label className="field-label">Pay date<input type="date" name="pay_date" /></label></div></fieldset>
+          <fieldset><legend>Location and deduction</legend><div className="form-grid three"><label className="field-label">LCA worksite<input name="lca_worksite" placeholder="City and state from the LCA" /></label><label className="field-label">Offer worksite<input name="offer_worksite" placeholder="City and state from the LCA" /></label><label className="field-label">Current instruction<input name="current_worksite" placeholder="Location named in a work message" /></label></div><div className="form-grid three"><label className="field-label">Worksite qualifier<select name="worksite_qualifier" defaultValue="UNKNOWN"><option value="UNKNOWN">Duration unknown</option><option value="ONGOING">Ongoing</option><option value="TEMPORARY">Temporary travel</option><option value="REMOTE">Remote</option></select></label><label className="field-label">Deduction description<input name="deduction_description" placeholder="Line label from payroll" /></label><label className="field-label">Deduction amount ($)<input name="deduction_dollars" inputMode="decimal" placeholder="Amount from payroll" /></label></div><div className="form-grid three"><label className="field-label">Deduction date<input type="date" name="deduction_date" /></label></div></fieldset>
           <fieldset><legend>Possible nonproductive interval</legend><div className="form-grid three"><label className="field-label">Start<input type="date" name="nonproductive_start" /></label><label className="field-label">End (exclusive)<input type="date" name="nonproductive_end" /></label><label className="field-label">Observed base pay ($)<input name="nonproductive_observed_dollars" inputMode="decimal" placeholder="0.00" /></label></div><div className="inline-checks"><label className="check-row"><input type="checkbox" name="employer_related_reason" /><span>Employer/client-related reason is supported</span></label><label className="check-row"><input type="checkbox" name="worker_available" /><span>Worker availability is supported</span></label><label className="check-row"><input type="checkbox" name="employment_active" /><span>Employment was active</span></label></div></fieldset>
           <div className="form-actions"><button type="submit" className="button button-primary" disabled={saving || writesAreLocked}>{saving ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />} Save reviewed facts</button><small>This fallback does not guess values from unreadable records.</small></div>
         </form>

@@ -1186,12 +1186,21 @@ button {
 }
 
 .form-error {
-  margin-top: 12px !important;
-  padding: 10px 12px;
-  color: #8a3030 !important;
-  border-radius: 9px;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  color: var(--red);
+  border: 1px solid var(--red-soft);
+  border-radius: 10px;
   background: var(--red-soft);
-  font-size: 10px !important;
+}
+
+.form-success {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  color: var(--green);
+  border: 1px solid var(--green-soft);
+  border-radius: 10px;
+  background: var(--green-soft);
 }
 
 .microcopy {

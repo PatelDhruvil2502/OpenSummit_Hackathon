@@ -220,6 +220,24 @@ test("email signup and signin persist an account in D1 and isolate cases", async
   assert.equal(signin.headers.get("location"), "/cases");
   assert.equal((await signedOutClient.request("/api/v1/cases")).status, 200);
 
+  const profilePage = await signedOutClient.request("/account", { headers: { accept: "text/html" } });
+  assert.equal(profilePage.status, 200);
+  assert.match(await profilePage.text(), /Personal information|Full name/i);
+  const profile = await signedOutClient.request("/api/auth/profile", {
+    method: "POST",
+    body: new URLSearchParams({
+      full_name: "Updated Reviewer",
+      email: "local-updated@example.test",
+      current_password: "correct-horse-battery",
+      new_password: "",
+      new_password_confirm: "",
+    }),
+  });
+  assert.equal(profile.status, 303);
+  assert.equal(profile.headers.get("location"), "/account?updated=1");
+  const updatedPage = await signedOutClient.request("/account", { headers: { accept: "text/html" } });
+  assert.match(await updatedPage.text(), /Updated Reviewer|local-updated@example.test/i);
+
   const owner = harness.client(null, { origin: "http://localhost" });
   await owner.request("/api/auth/signup", {
     method: "POST",

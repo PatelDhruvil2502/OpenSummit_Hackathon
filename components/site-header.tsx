@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { LogIn, LogOut, UserRound } from "lucide-react";
+import { LogIn, LogOut, Settings, UserRound } from "lucide-react";
 import { getChatGPTUser, getSignInPath } from "@/app/chatgpt-auth";
 import { Brand } from "@/components/brand";
 
@@ -26,6 +26,9 @@ export async function SiteHeader() {
                 <span>Signed in</span>
                 <strong>{user.fullName ?? "WageShield account"}</strong>
                 <small>{user.email}</small>
+                <Link href="/account">
+                  <Settings size={14} /> Edit profile
+                </Link>
                 <form action="/signout" method="post">
                   <button type="submit" className="account-signout">
                     <LogOut size={14} /> Sign out

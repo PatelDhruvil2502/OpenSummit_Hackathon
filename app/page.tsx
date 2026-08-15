@@ -15,7 +15,8 @@ import {
 } from "lucide-react";
 import { LandingActions } from "@/components/landing-actions";
 import { SiteHeader } from "@/components/site-header";
-import { getChatGPTUser, getSignInPath } from "@/app/chatgpt-auth";
+import { getChatGPTUser } from "@/app/chatgpt-auth";
+import { accountSignUpPath } from "@/lib/identity";
 
 const CHECKS = [
   {
@@ -48,7 +49,7 @@ export const dynamic = "force-dynamic";
 
 export default async function Home() {
   const user = await getChatGPTUser();
-  const signInPath = user ? "" : await getSignInPath("/cases/new");
+  const signInPath = user ? "" : accountSignUpPath("/cases/new");
   return (
     <main>
       <SiteHeader />
@@ -73,7 +74,7 @@ export default async function Home() {
           <div className="evidence-preview" aria-label="Example WageShield finding">
             <div className="preview-topbar">
               <span className="preview-dots"><i /><i /><i /></span>
-              <span>Evidence review · fictional example</span>
+              <span>Evidence review · example layout</span>
               <span className="preview-secure"><FolderLock size={13} /> private</span>
             </div>
             <div className="preview-body">

@@ -1,8 +1,9 @@
 import { z } from "zod";
 import { authenticationRequired, errorResponse, internalError, notFound } from "@/lib/api";
 import { authenticateCaseRequest } from "@/lib/case-auth";
-import { invalidateDerivedResults, refreshDocumentReviewStatus } from "@/lib/case-workflow";
+import { invalidateDerivedResults, refreshDocumentReviewStatus, analysisReadiness, assertCaseTransition } from "@/lib/case-workflow";
 import { extractDocument } from "@/lib/extraction";
+import { runAllRules } from "@/lib/rules";
 import { mutationGuard } from "@/lib/security";
 import { jsonResponse } from "@/lib/session";
 import {
@@ -260,15 +261,15 @@ export async function POST(request: Request, context: Context) {
       required: ["LCA_CERTIFIED", "OFFER_OR_EMPLOYMENT_LETTER", "PAYSTUB"].includes(
         typeResult.data,
       ),
-      status: "NEEDS_REVIEW",
+      status: extraction.method === "IMAGE_REVIEW_REQUIRED" ? "NEEDS_REVIEW" : "READY",
       pages: extraction.pageCount,
       bytes: file.size,
       contentType: actualMime,
       hash: digest,
-      synthetic: caseData.mode === "SANDBOX",
+      synthetic: false,
       uploadedAt: now,
       objectKey: `private/cases/${caseData.id}/original/${documentId}/v1/source`,
-      note: "Validated, privately stored, and processed into review-only proposals.",
+      note: "Validated, privately stored, and read from this file's text layer.",
       extraction: {
         method: extraction.method,
         characterCount: extraction.characterCount,
@@ -290,7 +291,7 @@ export async function POST(request: Request, context: Context) {
       rawValue: candidate.rawValue,
       normalizedValue: candidate.normalizedValue,
       confidence: candidate.confidence,
-      reviewStatus: "NEEDS_REVIEW",
+      reviewStatus: "CONFIRMED",
       affects: affectsForFact(candidate.type),
       evidence: evidence(
         document,
@@ -314,7 +315,7 @@ export async function POST(request: Request, context: Context) {
       complete: true,
       comparable: true,
       correctionStatus: "UNKNOWN",
-      reviewStatus: "NEEDS_REVIEW",
+      reviewStatus: "CONFIRMED",
       sourceDocumentId: document.id,
       evidence: evidence(
         document,
@@ -334,7 +335,7 @@ export async function POST(request: Request, context: Context) {
       category: deductionCategory(candidate.description),
       transactionStatus: "PAYROLL_OBSERVED",
       descriptionConfidence: candidate.confidence,
-      reviewStatus: "NEEDS_REVIEW",
+      reviewStatus: "CONFIRMED",
       sourceDocumentId: document.id,
       evidence: evidence(
         document,
@@ -346,10 +347,28 @@ export async function POST(request: Request, context: Context) {
     }));
     caseData.deductions.push(...proposedDeductions);
 
-    // A document with no pending proposals (e.g. an image needing manual
-    // transcription, or a PDF with no auto-detected fields) is ready as-is.
+    for (const fact of proposedFacts.filter((item) => item.type === "CURRENT_WORKSITE")) {
+      caseData.events.push({
+        id: `event_${crypto.randomUUID()}`,
+        kind: "WORKSITE_CHANGE",
+        title: "Worksite instruction from uploaded record",
+        start: caseData.reviewStart,
+        certainty: "APPROXIMATE",
+        attribution: "EMPLOYER",
+        worksite: fact.rawValue,
+        qualifier: "UNKNOWN",
+        evidence: [fact.evidence],
+      });
+    }
+
     refreshDocumentReviewStatus(caseData, document.id);
     invalidateDerivedResults(caseData);
+    if (caseData.mode === "STANDARD" && analysisReadiness(caseData).ready) {
+      assertCaseTransition(caseData, "ANALYZING");
+      caseData.findings = runAllRules(caseData);
+      assertCaseTransition(caseData, "RESULTS_READY");
+      caseData.lastAnalysisAt = new Date().toISOString();
+    }
     await saveCase(caseData);
     await appendAudit(caseData.id, "DOCUMENT_PROPOSALS_CREATED", {
       documentId,

@@ -98,7 +98,7 @@ export function CasesList() {
       <div className="empty-panel">
         <span className="empty-icon"><FolderOpen size={25} /></span>
         <strong>No active reviews yet</strong>
-        <p>Create a private review for your own authorized records. If you want to learn the workflow first, use the separate fictional sandbox.</p>
+        <p>Create a private review for your own authorized records.</p>
         <Link href="/cases/new" className="button button-primary"><Plus size={16} /> Start a review</Link>
       </div>
     );
