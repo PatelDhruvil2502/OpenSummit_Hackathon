@@ -3,19 +3,23 @@ import {
   authenticationRequired,
   errorResponse,
   internalError,
+  notFound,
   validationDetails,
 } from "@/lib/api";
 import { createStandardCase } from "@/lib/case-factory";
 import { authenticateCaseRequest } from "@/lib/case-auth";
 import { createFixtureCase } from "@/lib/fixtures";
 import { generateFixtureDocumentPdf } from "@/lib/fixture-documents";
+import { API_POLICY, RETENTION_POLICY } from "@/lib/product-config";
 import { runAllRules } from "@/lib/rules";
 import { mutationGuard, parseJsonBody, requireIdempotencyKey } from "@/lib/security";
 import { jsonResponse } from "@/lib/session";
 import {
   completeIdempotencyKey,
+  countActiveCases,
   createCase,
   deleteCase,
+  getCase,
   listCases,
   releaseIdempotencyKey,
   reserveIdempotencyKey,
@@ -25,7 +29,12 @@ import {
 } from "@/lib/storage";
 
 const SharedSchema = z.object({
-  retention_hours: z.number().int().min(1).max(168).default(24),
+  retention_hours: z
+    .number()
+    .int()
+    .min(RETENTION_POLICY.minimumHours)
+    .max(RETENTION_POLICY.maximumHours)
+    .default(RETENTION_POLICY.defaultHours),
   authorized_use_confirmed: z.literal(true),
 });
 
@@ -53,7 +62,7 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const { cases, nextCursor } = await listCases(identity.user.userId, {
       cursor: url.searchParams.get("cursor"),
-      limit: Number(url.searchParams.get("limit") ?? 25),
+      limit: Number(url.searchParams.get("limit") ?? API_POLICY.defaultCasePageSize),
     });
     return jsonResponse({ cases, nextCursor });
   } catch (error) {
@@ -82,7 +91,13 @@ export async function POST(request: Request) {
         true,
       );
     }
-    if (prior !== "RESERVED") return jsonResponse(prior.body, { status: prior.status });
+    if (prior !== "RESERVED") {
+      const caseData =
+        prior.reference.kind === "case"
+          ? await getCase(prior.reference.caseId, identity.user.userId)
+          : null;
+      return caseData ? jsonResponse({ case: caseData }, { status: prior.status }) : notFound();
+    }
     reserved = true;
 
     const body = await parseJsonBody(request);
@@ -108,6 +123,15 @@ export async function POST(request: Request) {
         "INVALID_REQUEST",
         "The review start date must be on or before the end date.",
         400,
+      );
+    }
+
+    if ((await countActiveCases(identity.user.userId)) >= API_POLICY.maximumActiveCases) {
+      await releaseIdempotencyKey(identity.user.userId, scope, idempotency.key);
+      return errorResponse(
+        "CASE_QUOTA_EXCEEDED",
+        `An account can keep at most ${API_POLICY.maximumActiveCases} active reviews. Delete or wait for an existing review to expire before creating another.`,
+        409,
       );
     }
 
@@ -157,7 +181,7 @@ export async function POST(request: Request) {
     try {
       await completeIdempotencyKey(identity.user.userId, scope, idempotency.key, {
         status: 201,
-        body: responseBody,
+        reference: { kind: "case", caseId: caseData.id },
       });
     } catch {
       // The case itself is committed and remains authoritative.

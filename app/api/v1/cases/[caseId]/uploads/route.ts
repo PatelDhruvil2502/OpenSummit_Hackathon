@@ -1,10 +1,15 @@
 import { z } from "zod";
 import { authenticationRequired, errorResponse, internalError, notFound } from "@/lib/api";
 import { authenticateCaseRequest } from "@/lib/case-auth";
-import { invalidateDerivedResults, refreshDocumentReviewStatus, analysisReadiness, assertCaseTransition } from "@/lib/case-workflow";
+import { invalidateDerivedResults, refreshDocumentReviewStatus } from "@/lib/case-workflow";
 import { extractDocument } from "@/lib/extraction";
-import { runAllRules } from "@/lib/rules";
-import { mutationGuard } from "@/lib/security";
+import {
+  API_POLICY,
+  UPLOAD_POLICY,
+  formatByteSize,
+  maximumUploadRequestBytes,
+} from "@/lib/product-config";
+import { mutationGuard, parseFormDataBody } from "@/lib/security";
 import { jsonResponse } from "@/lib/session";
 import {
   appendAudit,
@@ -24,10 +29,12 @@ import type {
   PayPeriod,
 } from "@/lib/types";
 
-const MAX_FILE_BYTES = 12 * 1024 * 1024;
-const MAX_REQUEST_BYTES = MAX_FILE_BYTES + 512 * 1024;
-const MAX_CASE_BYTES = 100 * 1024 * 1024;
-const MAX_CASE_DOCUMENTS = 50;
+const MAX_FILE_BYTES = UPLOAD_POLICY.maximumFileBytes;
+const MAX_REQUEST_BYTES = maximumUploadRequestBytes();
+const MAX_CASE_BYTES = UPLOAD_POLICY.maximumCaseBytes;
+const MAX_CASE_DOCUMENTS = UPLOAD_POLICY.maximumCaseDocuments;
+const MAX_FILE_LABEL = formatByteSize(MAX_FILE_BYTES);
+const MAX_CASE_LABEL = formatByteSize(MAX_CASE_BYTES);
 const TypeSchema = z.enum([
   "LCA_CERTIFIED",
   "OFFER_OR_EMPLOYMENT_LETTER",
@@ -140,7 +147,7 @@ export async function POST(request: Request, context: Context) {
   if (guarded) return guarded;
   const declaredRequestBytes = Number(request.headers.get("content-length") ?? "0");
   if (Number.isFinite(declaredRequestBytes) && declaredRequestBytes > MAX_REQUEST_BYTES) {
-    return errorResponse("FILE_TOO_LARGE", "Files must be 12 MB or smaller.", 413);
+    return errorResponse("FILE_TOO_LARGE", `Files must be ${MAX_FILE_LABEL} or smaller.`, 413);
   }
 
   let storedDocument: DocumentRecord | null = null;
@@ -159,7 +166,9 @@ export async function POST(request: Request, context: Context) {
       );
     }
 
-    const form = await request.formData();
+    const body = await parseFormDataBody(request, MAX_REQUEST_BYTES);
+    if (!body.ok) return body.response;
+    const form = body.value;
     const file = form.get("file");
     const typeResult = TypeSchema.safeParse(form.get("document_type"));
     if (!(file instanceof File) || !typeResult.success || file.size < 1) {
@@ -170,12 +179,12 @@ export async function POST(request: Request, context: Context) {
       );
     }
     if (file.size > MAX_FILE_BYTES) {
-      return errorResponse("FILE_TOO_LARGE", "Files must be 12 MB or smaller.", 413);
+      return errorResponse("FILE_TOO_LARGE", `Files must be ${MAX_FILE_LABEL} or smaller.`, 413);
     }
     if (usage.totalBytes + file.size > MAX_CASE_BYTES) {
       return errorResponse(
         "CASE_QUOTA_EXCEEDED",
-        "This review has reached its 100 MB private-storage limit.",
+        `This review has reached its ${MAX_CASE_LABEL} private-storage limit.`,
         409,
       );
     }
@@ -243,12 +252,34 @@ export async function POST(request: Request, context: Context) {
       extraction = await extractDocument(bytes.slice(), actualMime, typeResult.data);
     } catch (error) {
       if (error instanceof Error && error.message === "DOCUMENT_PAGE_LIMIT_EXCEEDED") {
-        return errorResponse("INVALID_REQUEST", "PDFs can contain at most 200 pages.", 400);
+        return errorResponse(
+          "INVALID_REQUEST",
+          `PDFs can contain at most ${UPLOAD_POLICY.maximumPdfPages} pages.`,
+          400,
+        );
       }
       return errorResponse(
         "INVALID_UPLOAD_TYPE",
         "The document parser could not safely read this file. Export a fresh PDF or image and try again.",
         422,
+      );
+    }
+
+    const proposedWorksiteEvents = extraction.facts.filter(
+      (candidate) => candidate.type === "CURRENT_WORKSITE",
+    ).length;
+    const structuredLimitExceeded =
+      caseData.facts.length + extraction.facts.length > API_POLICY.maximumFactsPerCase ||
+      caseData.payPeriods.length + extraction.payPeriods.length >
+        API_POLICY.maximumPayPeriodsPerCase ||
+      caseData.deductions.length + extraction.deductions.length >
+        API_POLICY.maximumDeductionsPerCase ||
+      caseData.events.length + proposedWorksiteEvents > API_POLICY.maximumEventsPerCase;
+    if (structuredLimitExceeded) {
+      return errorResponse(
+        "CASE_QUOTA_EXCEEDED",
+        "This document would exceed the review's structured-record limit. Remove older evidence or start a new review.",
+        409,
       );
     }
 
@@ -269,7 +300,7 @@ export async function POST(request: Request, context: Context) {
       synthetic: false,
       uploadedAt: now,
       objectKey: `private/cases/${caseData.id}/original/${documentId}/v1/source`,
-      note: "Validated, privately stored, and read from this file's text layer.",
+      note: "Validated, privately stored, and proposed values read from this file's text layer for your review.",
       extraction: {
         method: extraction.method,
         characterCount: extraction.characterCount,
@@ -291,7 +322,7 @@ export async function POST(request: Request, context: Context) {
       rawValue: candidate.rawValue,
       normalizedValue: candidate.normalizedValue,
       confidence: candidate.confidence,
-      reviewStatus: "CONFIRMED",
+      reviewStatus: "NEEDS_REVIEW",
       affects: affectsForFact(candidate.type),
       evidence: evidence(
         document,
@@ -315,7 +346,7 @@ export async function POST(request: Request, context: Context) {
       complete: true,
       comparable: true,
       correctionStatus: "UNKNOWN",
-      reviewStatus: "CONFIRMED",
+      reviewStatus: "NEEDS_REVIEW",
       sourceDocumentId: document.id,
       evidence: evidence(
         document,
@@ -335,7 +366,7 @@ export async function POST(request: Request, context: Context) {
       category: deductionCategory(candidate.description),
       transactionStatus: "PAYROLL_OBSERVED",
       descriptionConfidence: candidate.confidence,
-      reviewStatus: "CONFIRMED",
+      reviewStatus: "NEEDS_REVIEW",
       sourceDocumentId: document.id,
       evidence: evidence(
         document,
@@ -363,12 +394,6 @@ export async function POST(request: Request, context: Context) {
 
     refreshDocumentReviewStatus(caseData, document.id);
     invalidateDerivedResults(caseData);
-    if (caseData.mode === "STANDARD" && analysisReadiness(caseData).ready) {
-      assertCaseTransition(caseData, "ANALYZING");
-      caseData.findings = runAllRules(caseData);
-      assertCaseTransition(caseData, "RESULTS_READY");
-      caseData.lastAnalysisAt = new Date().toISOString();
-    }
     await saveCase(caseData);
     await appendAudit(caseData.id, "DOCUMENT_PROPOSALS_CREATED", {
       documentId,

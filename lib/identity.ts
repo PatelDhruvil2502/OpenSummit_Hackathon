@@ -57,7 +57,27 @@ function safeFullName(headers: HeaderReader): string | null {
   return safeDecodeURIComponent(encoded);
 }
 
-function forwardedUser(headers: HeaderReader): AuthenticatedUser | null {
+/**
+ * Forwarded identity headers are only meaningful behind a gateway that strips
+ * client-supplied copies and injects its own (OpenAI Sites does this). On a
+ * directly-addressable Worker they are attacker-controlled, and trusting them
+ * would let anyone authenticate as any user by setting a request header.
+ *
+ * So the path is opt-in: it stays off unless the deployment sets
+ * TRUST_FORWARDED_IDENTITY, declaring that such a gateway is in front of it.
+ * See DEPLOYMENT.md.
+ */
+export async function forwardedIdentityIsTrusted(): Promise<boolean> {
+  try {
+    const { trustsForwardedIdentity } = await import("./runtime-flags");
+    return trustsForwardedIdentity();
+  } catch {
+    return false;
+  }
+}
+
+function forwardedUser(headers: HeaderReader, trusted: boolean): AuthenticatedUser | null {
+  if (!trusted) return null;
   const userId = headers.get(USER_ID_HEADER)?.trim();
   const email = headers.get(USER_EMAIL_HEADER)?.trim();
   if (!userId || !email) return null;
@@ -101,14 +121,15 @@ export function isLocalHeaders(headers: HeaderReader): boolean {
   return isLocalHostname(hostnameFromHeaders(headers));
 }
 
-export function getUserFromHeaders(headers: HeaderReader): AuthenticatedUser | null {
-  return forwardedUser(headers);
+export async function getUserFromHeaders(headers: HeaderReader): Promise<AuthenticatedUser | null> {
+  return forwardedUser(headers, await forwardedIdentityIsTrusted());
 }
 
 export async function getRequestIdentity(request: Request): Promise<RequestIdentity | null> {
   const { getAccountFromCookie } = await import("./accounts");
   const user =
-    forwardedUser(request.headers) ?? (await getAccountFromCookie(request.headers.get("cookie")));
+    forwardedUser(request.headers, await forwardedIdentityIsTrusted()) ??
+    (await getAccountFromCookie(request.headers.get("cookie")));
   if (!user) return null;
   const legacyOwnerSession = parseCookies(request.headers.get("cookie"))[LEGACY_SESSION_COOKIE];
   return {
@@ -144,6 +165,8 @@ export function safeRelativeReturnPath(value: string | null | undefined): string
     url.pathname === "/signin" ||
     url.pathname === "/signup" ||
     url.pathname === "/signout" ||
+    url.pathname === "/forgot-password" ||
+    url.pathname === "/reset-password" ||
     url.pathname === "/dev-login" ||
     url.pathname === "/dev-signout"
   ) {

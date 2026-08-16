@@ -16,7 +16,7 @@ export const dynamic = "force-dynamic";
 export default async function SignInPage({
   searchParams,
 }: {
-  searchParams: Promise<{ return_to?: string; error?: string }>;
+  searchParams: Promise<{ return_to?: string; error?: string; reset?: string }>;
 }) {
   const query = await searchParams;
   const returnTo = safeRelativeReturnPath(query.return_to);
@@ -43,6 +43,11 @@ export default async function SignInPage({
             Too many sign-in attempts. Wait a few minutes, then try again.
           </p>
         )}
+        {query.reset === "1" && (
+          <p className="form-success" role="status">
+            Your password was changed and every device was signed out. Sign in with the new password.
+          </p>
+        )}
         <form className="auth-form" action="/api/auth/signin" method="post">
           <input type="hidden" name="return_to" value={returnTo} />
           <label htmlFor="email">Email</label>
@@ -61,6 +66,11 @@ export default async function SignInPage({
             <ShieldCheck size={17} /> Sign in
           </button>
         </form>
+        <p className="auth-switch">
+          <Link href={`/forgot-password?return_to=${encodeURIComponent(returnTo)}`}>
+            Forgot your password?
+          </Link>
+        </p>
         <p className="auth-switch">
           New here? <Link href={accountSignUpPath(returnTo)}>Create an account</Link>
         </p>

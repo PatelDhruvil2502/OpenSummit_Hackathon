@@ -21,6 +21,21 @@ async function buildMinimalPdf() {
 
 const MINIMAL_PDF_BYTES = await buildMinimalPdf();
 
+export async function textPdf(lines) {
+  const document = await PDFDocument.create();
+  const font = await document.embedFont(StandardFonts.Helvetica);
+  const page = document.addPage([612, 792]);
+  lines.forEach((line, index) => {
+    page.drawText(String(line), {
+      x: 48,
+      y: 730 - index * 24,
+      size: 12,
+      font,
+    });
+  });
+  return document.save({ useObjectStreams: false });
+}
+
 function findBytes(bytes, needle) {
   outer: for (let index = 0; index <= bytes.length - needle.length; index += 1) {
     for (let offset = 0; offset < needle.length; offset += 1) {
@@ -112,7 +127,7 @@ async function collectJavaScriptModules(root) {
   return modules;
 }
 
-export async function createWorkerHarness(label = "hardening") {
+export async function createWorkerHarness(label = "hardening", options = {}) {
   const suffix = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const workerRoot = fileURLToPath(new URL("../../dist/server/", import.meta.url));
   const entrypoint = join(workerRoot, "index.js");
@@ -131,6 +146,11 @@ export async function createWorkerHarness(label = "hardening") {
       compatibilityDate: "2026-08-15",
       compatibilityFlags: ["nodejs_compat"],
       unsafeTriggerHandlers: true,
+      bindings: {
+        // The harness emulates OpenAI Sites, whose gateway strips client
+        // identity headers and injects authenticated values of its own.
+        TRUST_FORWARDED_IDENTITY: options.trustForwardedIdentity === false ? "false" : "true",
+      },
       d1Databases: { DB: `${label}-db-${suffix}` },
       r2Buckets: { BUCKET: `${label}-bucket-${suffix}` },
     }),

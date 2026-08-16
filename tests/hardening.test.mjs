@@ -10,6 +10,7 @@ import {
   expectJsonError,
   minimalPdf,
   minimalPdfVariant,
+  textPdf,
 } from "./helpers/worker-harness.mjs";
 
 const ALICE = {
@@ -168,10 +169,28 @@ test("email signup and signin persist an account in D1 and isolate cases", async
   assert.equal(page.status, 200);
   assert.match(await page.text(), /Sign in|Create an account/i);
 
+  const bypassedConsent = await local.request("/api/auth/signup", {
+    method: "POST",
+    body: new URLSearchParams({
+      email: "no-consent@example.test",
+      full_name: "No Consent",
+      password: "correct-horse-battery",
+      return_to: "/cases",
+    }),
+  });
+  assert.match(bypassedConsent.headers.get("location") ?? "", /error=invalid/);
+  assert.equal(
+    await harness.DB.prepare("SELECT id FROM accounts WHERE email = ?")
+      .bind("no-consent@example.test")
+      .first(),
+    null,
+  );
+
   const signupForm = new URLSearchParams({
     email: "local@example.test",
     full_name: "Local Reviewer",
     password: "correct-horse-battery",
+    terms_accepted: "1",
     return_to: "/cases",
   });
   const signup = await local.request("/api/auth/signup", {
@@ -186,6 +205,13 @@ test("email signup and signin persist an account in D1 and isolate cases", async
   assert.match(loginCookie, /HttpOnly/i);
   assert.match(loginCookie, /SameSite=Lax/i);
   assert.match(loginCookie, /Max-Age=2592000/i);
+  const consent = await harness.DB.prepare(
+    "SELECT policy_accepted_at, policy_version FROM accounts WHERE email = ?",
+  )
+    .bind("local@example.test")
+    .first();
+  assert.match(consent?.policy_accepted_at ?? "", /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(consent?.policy_version, "1.0");
 
   const authenticated = await local.request("/api/v1/cases");
   assert.equal(authenticated.status, 200);
@@ -245,6 +271,7 @@ test("email signup and signin persist an account in D1 and isolate cases", async
       email: "owner@example.test",
       full_name: "Case Owner",
       password: "correct-horse-battery",
+      terms_accepted: "1",
       return_to: "/cases",
     }),
   });
@@ -256,6 +283,7 @@ test("email signup and signin persist an account in D1 and isolate cases", async
       email: "stranger@example.test",
       full_name: "Other User",
       password: "correct-horse-battery",
+      terms_accepted: "1",
       return_to: "/cases",
     }),
   });
@@ -474,17 +502,49 @@ test("upload validation rejects unsafe inputs and stores only case-scoped valid 
   await expectJsonError(bobDownload, 404, "CASE_ACCESS_DENIED");
 });
 
+test("file-derived values remain proposals until the user reviews them", async () => {
+  const created = await createCase(alice, "custom", { title: "Proposal review boundary" });
+  const bytes = await textPdf([
+    "Annual wage: $120,000.00 per year",
+    "Place of employment: Indianapolis, Indiana",
+    "Pay frequency: biweekly",
+  ]);
+  const result = await alice.json(`/api/v1/cases/${created.id}/uploads`, {
+    method: "POST",
+    body: uploadForm(bytes, {
+      filename: "synthetic-lca.pdf",
+      documentType: "LCA_CERTIFIED",
+    }),
+  });
+  assert.equal(result.response.status, 201, JSON.stringify(result.payload));
+  assert.ok(result.payload.extraction.proposedFactCount > 0);
+  assert.equal(result.payload.document.status, "NEEDS_REVIEW");
+  assert.ok(result.payload.case.facts.length > 0);
+  assert.ok(
+    result.payload.case.facts.every((fact) => fact.reviewStatus === "NEEDS_REVIEW"),
+  );
+  assert.equal(result.payload.case.state, "FACT_REVIEW_REQUIRED");
+  assert.equal(result.payload.case.findings.length, 0);
+  assert.equal(result.payload.case.lastAnalysisAt, undefined);
+});
+
 test("manual fact review and correction invalidate findings and remain auditable", async () => {
   const created = await createCase(alice, "custom", { title: "Manual facts" });
-  await uploadSupportingDocument(alice, created.id, "LCA_CERTIFIED", 1);
-  await uploadSupportingDocument(
+  const lcaDocument = await uploadSupportingDocument(alice, created.id, "LCA_CERTIFIED", 1);
+  const offerDocument = await uploadSupportingDocument(
     alice,
     created.id,
     "OFFER_OR_EMPLOYMENT_LETTER",
     2,
   );
-  await uploadSupportingDocument(alice, created.id, "PAYSTUB", 3);
+  const payDocument = await uploadSupportingDocument(alice, created.id, "PAYSTUB", 3);
   await uploadSupportingDocument(alice, created.id, "PAYSTUB", 4);
+  const missingSource = await alice.request(`/api/v1/cases/${created.id}/facts/manual`, {
+    method: "POST",
+    json: { lca_annual_dollars: "120000.00" },
+  });
+  await expectJsonError(missingSource, 400, "INVALID_REQUEST");
+
   const manual = await alice.json(`/api/v1/cases/${created.id}/facts/manual`, {
     method: "POST",
     json: {
@@ -511,6 +571,26 @@ test("manual fact review and correction invalidate findings and remain auditable
       worker_available: true,
       employment_active: true,
       nonproductive_observed_dollars: "0.00",
+      lca_source: {
+        document_id: lcaDocument.id,
+        page: 1,
+        excerpt: "Annual wage: $120,000.00; place of employment: Indianapolis, Indiana",
+      },
+      offer_source: {
+        document_id: offerDocument.id,
+        page: 1,
+        excerpt: "Annual base salary $120,000.00; worksite Indianapolis, Indiana",
+      },
+      pay_source: {
+        document_id: payDocument.id,
+        page: 1,
+        excerpt: "Regular base $3,769.23; H-1B filing/legal fee recovery $1,500.00",
+      },
+      context_source: {
+        document_id: payDocument.id,
+        page: 1,
+        excerpt: "No ordinary base pay shown for May 4 through May 18; current instruction Columbus, Ohio",
+      },
     },
   });
   assert.equal(manual.response.status, 200, JSON.stringify(manual.payload));
@@ -520,10 +600,26 @@ test("manual fact review and correction invalidate findings and remain auditable
     manual.payload.case.facts.every((item) => item.reviewStatus === "USER_CORRECTED"),
   );
 
+  const noOp = await alice.request(`/api/v1/cases/${created.id}/facts/manual`, {
+    method: "POST",
+    json: {
+      worker_name: manual.payload.case.workerName,
+      employer_name: manual.payload.case.employerName,
+      position: manual.payload.case.position,
+    },
+  });
+  await expectJsonError(noOp, 400, "INVALID_REQUEST");
+
   const lcaFact = manual.payload.case.facts.find(
     (item) => item.type === "LCA_WAGE_ANNUAL_CENTS",
   );
   assert.ok(lcaFact);
+  assert.equal(lcaFact.evidence.documentId, lcaDocument.id);
+  assert.equal(lcaFact.evidence.page, 1);
+  assert.equal(
+    lcaFact.evidence.text,
+    "Annual wage: $120,000.00; place of employment: Indianapolis, Indiana",
+  );
   const corrected = await alice.json(
     `/api/v1/cases/${created.id}/facts/${lcaFact.id}/corrections`,
     {
@@ -638,6 +734,45 @@ test("report generation reconstructs redacted bytes and exposes a reproducible m
   });
   await expectJsonError(stale, 409, "INVALID_REQUEST");
 
+  const storedReportCase = await harness.DB.prepare(
+    "SELECT payload_json FROM cases WHERE id = ?",
+  )
+    .bind(hero.id)
+    .first();
+  const reportCasePayload = JSON.parse(storedReportCase.payload_json);
+  const selectedEvidenceIds = new Set(
+    reportCasePayload.findings
+      .filter((finding) => selected.includes(finding.id))
+      .flatMap((finding) => finding.evidence.map((item) => item.id)),
+  );
+  const selectedFact = reportCasePayload.facts.find((fact) =>
+    selectedEvidenceIds.has(fact.evidence.id),
+  );
+  const excludedFact = reportCasePayload.facts.find((fact) =>
+    !selectedEvidenceIds.has(fact.evidence.id),
+  );
+  assert.ok(selectedFact);
+  assert.ok(excludedFact);
+  reportCasePayload.corrections = [
+    {
+      id: "correction-selected-report",
+      factId: selectedFact.id,
+      previousValue: "Old selected correction marker",
+      newValue: "Selected correction marker",
+      createdAt: "2026-08-01T00:00:00.000Z",
+    },
+    {
+      id: "correction-excluded-report",
+      factId: excludedFact.id,
+      previousValue: "Old private correction marker",
+      newValue: "Private correction marker",
+      createdAt: "2026-08-02T00:00:00.000Z",
+    },
+  ];
+  await harness.DB.prepare("UPDATE cases SET payload_json = ? WHERE id = ?")
+    .bind(JSON.stringify(reportCasePayload), hero.id)
+    .run();
+
   const reportKey = nextIdempotencyKey("report");
   const generated = await alice.json(`/api/v1/cases/${hero.id}/reports`, {
     method: "POST",
@@ -652,7 +787,9 @@ test("report generation reconstructs redacted bytes and exposes a reproducible m
   assert.equal(generated.payload.report.status, "READY");
   assert.deepEqual(generated.payload.report.manifest.included_finding_ids, selected);
   assert.deepEqual(generated.payload.report.manifest.redactions.sort(), [
+    "case_title",
     "employer_name",
+    "position",
     "worker_name",
   ]);
 
@@ -685,6 +822,8 @@ test("report generation reconstructs redacted bytes and exposes a reproducible m
   assert.match(text, /REDACTED BY USER/i);
   assert.match(text, /Observed ordinary base pay is below/i);
   assert.match(text, /filing(?:\/| or )legal fee/i);
+  assert.match(text, /Selected correction marker/);
+  assert.doesNotMatch(text, /Private correction marker/);
   assert.doesNotMatch(
     text,
     /unpaid interval may be related to an employer-side delay/i,
@@ -727,6 +866,27 @@ test("report generation reconstructs redacted bytes and exposes a reproducible m
   );
   assert.equal(oldManifest.response.status, 200);
   assert.deepEqual(oldManifest.payload.manifest.included_finding_ids, selected);
+
+  const correctedFact = hero.facts.find((fact) => fact.type === "LCA_WAGE_ANNUAL_CENTS");
+  assert.ok(correctedFact);
+  const correction = await alice.json(
+    `/api/v1/cases/${hero.id}/facts/${correctedFact.id}/corrections`,
+    {
+      method: "POST",
+      json: {
+        action: "correct",
+        raw_value: "$120,000.00 per year",
+        normalized_value: "12000000",
+      },
+    },
+  );
+  assert.equal(correction.response.status, 200, JSON.stringify(correction.payload));
+  assert.equal(correction.payload.case.lastReport, undefined);
+  const supersededHistory = await alice.json(`/api/v1/cases/${hero.id}/reports`);
+  assert.equal(supersededHistory.response.status, 200);
+  assert.ok(
+    supersededHistory.payload.reports.every((item) => item.status === "SUPERSEDED"),
+  );
 
   for (const path of [
     `/api/v1/cases/${hero.id}/reports/${reportId}`,
@@ -860,6 +1020,166 @@ test("expired retention blocks lists, case reads, and private document downloads
   );
   await expectJsonError(
     await alice.request(`/api/v1/cases/${hero.id}/documents/${document.id}`),
+    404,
+    "CASE_ACCESS_DENIED",
+  );
+});
+
+test("idempotency receipts contain only resource IDs and cannot replay expired or deleted case data", async () => {
+  const createKey = nextIdempotencyKey("safe-receipt-create");
+  const createBody = caseCreationBody("hero", { retention_hours: 1 });
+  const created = await alice.json("/api/v1/cases", {
+    method: "POST",
+    headers: { "idempotency-key": createKey },
+    json: createBody,
+  });
+  assert.equal(created.response.status, 201, JSON.stringify(created.payload));
+  const caseId = created.payload.case.id;
+
+  const analysisKey = nextIdempotencyKey("safe-receipt-analysis");
+  const analysis = await alice.json(`/api/v1/cases/${caseId}/analyses`, {
+    method: "POST",
+    headers: { "idempotency-key": analysisKey },
+  });
+  assert.equal(analysis.response.status, 201, JSON.stringify(analysis.payload));
+
+  const reportKey = nextIdempotencyKey("safe-receipt-report");
+  const reportBody = {
+    included_finding_ids: [analysis.payload.case.findings[0].id],
+    redact_worker_name: true,
+    redact_employer_name: true,
+  };
+  const report = await alice.json(`/api/v1/cases/${caseId}/reports`, {
+    method: "POST",
+    headers: { "idempotency-key": reportKey },
+    json: reportBody,
+  });
+  assert.equal(report.response.status, 201, JSON.stringify(report.payload));
+
+  const receipts = await harness.DB.prepare(
+    `SELECT operation_scope, response_json, response_status FROM idempotency_keys
+      WHERE owner_user_id = ? AND idempotency_key IN (?, ?, ?)
+      ORDER BY operation_scope`,
+  )
+    .bind(ALICE.id, createKey, analysisKey, reportKey)
+    .all();
+  assert.equal(receipts.results.length, 3);
+  const parsedReceipts = receipts.results.map((row) => ({
+    scope: row.operation_scope,
+    status: row.response_status,
+    reference: JSON.parse(row.response_json),
+  }));
+  assert.deepEqual(parsedReceipts, [
+    {
+      scope: `cases:${caseId}:analysis`,
+      status: 201,
+      reference: {
+        kind: "analysis",
+        caseId,
+        analysisId: analysis.payload.analysis.id,
+      },
+    },
+    {
+      scope: `cases:${caseId}:report`,
+      status: 201,
+      reference: { kind: "report", caseId, reportId: report.payload.report.id },
+    },
+    {
+      scope: "cases:create",
+      status: 201,
+      reference: { kind: "case", caseId },
+    },
+  ]);
+  const storedReceipts = receipts.results.map((row) => row.response_json).join("\n");
+  assert.doesNotMatch(
+    storedReceipts,
+    /Arjun Mehta|Northstar Data Systems|workerName|employerName|findings|ownerUserId|objectKey/,
+  );
+
+  const analysisReplay = await alice.json(`/api/v1/cases/${caseId}/analyses`, {
+    method: "POST",
+    headers: { "idempotency-key": analysisKey },
+  });
+  assert.equal(analysisReplay.response.status, 201);
+  assert.equal(analysisReplay.payload.analysis.id, analysis.payload.analysis.id);
+  const reportReplay = await alice.json(`/api/v1/cases/${caseId}/reports`, {
+    method: "POST",
+    headers: { "idempotency-key": reportKey },
+    json: reportBody,
+  });
+  assert.equal(reportReplay.response.status, 201);
+  assert.equal(reportReplay.payload.report.id, report.payload.report.id);
+
+  await harness.DB.prepare("UPDATE cases SET retention_expires_at = ? WHERE id = ?")
+    .bind("2000-01-01T00:00:00.000Z", caseId)
+    .run();
+  await expectJsonError(
+    await alice.request("/api/v1/cases", {
+      method: "POST",
+      headers: { "idempotency-key": createKey },
+      json: createBody,
+    }),
+    404,
+    "CASE_ACCESS_DENIED",
+  );
+  await expectJsonError(
+    await alice.request(`/api/v1/cases/${caseId}/analyses`, {
+      method: "POST",
+      headers: { "idempotency-key": analysisKey },
+    }),
+    404,
+    "CASE_ACCESS_DENIED",
+  );
+  await expectJsonError(
+    await alice.request(`/api/v1/cases/${caseId}/reports`, {
+      method: "POST",
+      headers: { "idempotency-key": reportKey },
+      json: reportBody,
+    }),
+    404,
+    "CASE_ACCESS_DENIED",
+  );
+
+  const expiredKey = nextIdempotencyKey("scheduled-expiry");
+  await harness.DB.prepare(
+    `INSERT INTO idempotency_keys (
+      owner_user_id, operation_scope, idempotency_key, created_at, expires_at
+    ) VALUES (?, ?, ?, ?, ?)`,
+  )
+    .bind(
+      ALICE.id,
+      "test:expired-receipt",
+      expiredKey,
+      "1999-01-01T00:00:00.000Z",
+      "2000-01-01T00:00:00.000Z",
+    )
+    .run();
+
+  const sweep = await harness.scheduled();
+  assert.equal(sweep.status, 200);
+  assert.equal((await sweep.json()).outcome, "ok");
+  const remainingReceipts = await harness.DB.prepare(
+    `SELECT COUNT(*) AS count FROM idempotency_keys
+      WHERE idempotency_key IN (?, ?, ?, ?)`,
+  )
+    .bind(createKey, analysisKey, reportKey, expiredKey)
+    .first();
+  assert.equal(Number(remainingReceipts.count), 0);
+
+  await expectJsonError(
+    await alice.request(`/api/v1/cases/${caseId}/analyses`, {
+      method: "POST",
+      headers: { "idempotency-key": analysisKey },
+    }),
+    404,
+    "CASE_ACCESS_DENIED",
+  );
+  await expectJsonError(
+    await alice.request(`/api/v1/cases/${caseId}/reports`, {
+      method: "POST",
+      headers: { "idempotency-key": reportKey },
+      json: reportBody,
+    }),
     404,
     "CASE_ACCESS_DENIED",
   );

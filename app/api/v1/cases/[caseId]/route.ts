@@ -8,10 +8,10 @@ import {
 } from "@/lib/api";
 import { authenticateCaseRequest } from "@/lib/case-auth";
 import { invalidateDerivedResults } from "@/lib/case-workflow";
+import { RETENTION_POLICY } from "@/lib/product-config";
 import { mutationGuard, parseJsonBody, requireIdempotencyKey } from "@/lib/security";
 import { jsonResponse } from "@/lib/session";
 import {
-  completeIdempotencyKey,
   deleteCase,
   getCase,
   listReports,
@@ -25,7 +25,12 @@ const PatchCaseSchema = z
     title: z.string().trim().min(1).max(100).optional(),
     review_start: z.iso.date().optional(),
     review_end: z.iso.date().optional(),
-    retention_hours: z.number().int().min(1).max(168).optional(),
+    retention_hours: z
+      .number()
+      .int()
+      .min(RETENTION_POLICY.minimumHours)
+      .max(RETENTION_POLICY.maximumHours)
+      .optional(),
   })
   .refine((value) => Object.keys(value).length > 0, "At least one setting is required");
 
@@ -38,7 +43,7 @@ export async function GET(request: Request, context: Context) {
     const { caseId } = await context.params;
     const caseData = await getCase(caseId, identity.user.userId);
     if (!caseData) return notFound();
-    caseData.reports = await listReports(caseId, identity.user.userId);
+    caseData.reports = await listReports(caseId, identity.user.userId, caseData.reports);
     if (caseData.lastReport) {
       caseData.lastReport =
         caseData.reports.find((report) => report.id === caseData.lastReport?.id) ??
@@ -115,7 +120,7 @@ export async function DELETE(request: Request, context: Context) {
     idempotencyKey = idempotency.key;
     scope = `cases:${caseId}:delete`;
     const prior = await reserveIdempotencyKey(identity.user.userId, scope, idempotencyKey);
-    if (prior === "IN_PROGRESS") {
+    if (prior !== "RESERVED") {
       return errorResponse(
         "OPERATION_IN_PROGRESS",
         "Deletion is already running. Retry shortly with the same key.",
@@ -123,7 +128,6 @@ export async function DELETE(request: Request, context: Context) {
         true,
       );
     }
-    if (prior !== "RESERVED") return jsonResponse(prior.body, { status: prior.status });
     reserved = true;
     const deleted = await deleteCase(caseId, identity.user.userId);
     if (!deleted) {
@@ -133,14 +137,6 @@ export async function DELETE(request: Request, context: Context) {
     const responseBody = {
       deletion: { status: "DELETED", verified: true, completed_at: new Date().toISOString() },
     };
-    try {
-      await completeIdempotencyKey(identity.user.userId, scope, idempotencyKey, {
-        status: 200,
-        body: responseBody,
-      });
-    } catch {
-      // The verified deletion remains authoritative.
-    }
     return jsonResponse(responseBody);
   } catch (error) {
     if (reserved && scope && idempotencyKey) {

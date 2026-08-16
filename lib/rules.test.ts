@@ -102,7 +102,7 @@ function baseCase(scenario: Scenario): CasePayload {
     retentionExpiresAt: "2026-08-16T00:00:00Z",
     createdAt: "2026-08-15T00:00:00Z",
     updatedAt: "2026-08-15T00:00:00Z",
-    ruleSetVersion: "wageshield.rules.1.1.0",
+    ruleSetVersion: "wageshield.rules.1.2.0",
     sourceCorpusVersion: "h1b_sources.2026-08-15",
     documents: [],
     facts: [],
@@ -295,6 +295,7 @@ function ambiguousCase(): CasePayload {
 test("hero produces three possible discrepancies and one worksite review", () => {
   const findings = runAllRules(heroCase());
   assert.equal(findings.length, 4);
+  assert.ok(findings.every((finding) => finding.includeInReport === false));
   assert.deepEqual(
     Object.fromEntries(findings.map((finding) => [finding.module, finding.status])),
     {
@@ -400,9 +401,9 @@ test("canonical cent-valued fixture facts resolve without a dollar-unit conversi
   const findings = runAllRules(payload);
   assert.equal(wage.status, "POSSIBLE_DISCREPANCY");
   assert.equal(wage.amountCents, 507_693);
-  assert.equal(payload.ruleSetVersion, "wageshield.rules.1.1.0");
+  assert.equal(payload.ruleSetVersion, "wageshield.rules.1.2.0");
   assert.ok(
-    findings.every((finding) => finding.ruleVersion.endsWith(".v1.1.0")),
+    findings.every((finding) => finding.ruleVersion.endsWith(".v1.2.0")),
   );
 });
 
@@ -438,6 +439,45 @@ test("a high-pay period cannot offset a separate supported wage shortfall", () =
   assert.equal(finding.amountCents, 161_538);
 });
 
+test("the same reviewed pay period from two records contributes only once", () => {
+  const payload = heroCase();
+  const original = payPeriod("period-original", "2026-02-02", "2026-02-16", 300_000);
+  const duplicate = payPeriod("period-second-record", "2026-02-02", "2026-02-16", 300_000, {
+    evidence: evidence(
+      "span-period-second-record",
+      "Second record for regular base",
+      "$3,000.00",
+      "observed",
+    ),
+  });
+  payload.payPeriods = [original, duplicate];
+
+  const finding = runWageBenchmarkRule(payload);
+  assert.equal(finding.status, "POSSIBLE_DISCREPANCY");
+  assert.equal(finding.amountCents, 161_538);
+  assert.ok(finding.diagnostics.includes("WAGE_DUPLICATE_PERIODS_COLLAPSED"));
+  assert.equal(
+    finding.calculation?.rows.find((row) => row.label.startsWith("Expected base across"))
+      ?.label,
+    "Expected base across 1 period",
+  );
+  assert.ok(finding.evidence.some((item) => item.id === "span-period-second-record"));
+});
+
+test("different reviewed base amounts for one pay period are conflicting evidence", () => {
+  const payload = heroCase();
+  payload.payPeriods = [
+    payPeriod("period-original", "2026-02-02", "2026-02-16", 300_000),
+    payPeriod("period-conflict", "2026-02-02", "2026-02-16", 350_000),
+  ];
+
+  const finding = runWageBenchmarkRule(payload);
+  assert.equal(finding.status, "CONFLICTING_EVIDENCE");
+  assert.equal(finding.amountCents, undefined);
+  assert.equal(finding.calculation, null);
+  assert.deepEqual(finding.diagnostics, ["WAGE_PERIOD_CONFLICT"]);
+});
+
 test("worksites normalize every U.S. state name and ignore ZIP-only formatting variance", () => {
   const payload = cleanCase();
   payload.events = [];
@@ -452,6 +492,38 @@ test("worksites normalize every U.S. state name and ignore ZIP-only formatting v
   const finding = runEmploymentFactConsistencyRule(payload);
   assert.equal(finding.status, "NO_MISMATCH_DETECTED");
   assert.ok(finding.diagnostics.includes("WORKSITE_CONSISTENT"));
+});
+
+test("worksites compare an unambiguous city and state without street-address noise", () => {
+  const payload = cleanCase();
+  payload.events = [];
+  const lca = payload.facts.find((item) => item.type === "LCA_WORKSITE");
+  const offer = payload.facts.find((item) => item.type === "OFFER_WORKSITE");
+  assert.ok(lca && offer);
+  lca.rawValue = "123 Broadway, New York, New York 10006, U.S.";
+  lca.normalizedValue = lca.rawValue;
+  offer.rawValue = "New York, NY";
+  offer.normalizedValue = offer.rawValue;
+
+  const finding = runEmploymentFactConsistencyRule(payload);
+  assert.equal(finding.status, "NO_MISMATCH_DETECTED");
+  assert.ok(finding.diagnostics.includes("WORKSITE_CONSISTENT"));
+});
+
+test("the same city name in different states remains a worksite conflict", () => {
+  const payload = cleanCase();
+  payload.events = [];
+  const lca = payload.facts.find((item) => item.type === "LCA_WORKSITE");
+  const offer = payload.facts.find((item) => item.type === "OFFER_WORKSITE");
+  assert.ok(lca && offer);
+  lca.rawValue = "Springfield, Illinois";
+  lca.normalizedValue = lca.rawValue;
+  offer.rawValue = "Springfield, Ohio";
+  offer.normalizedValue = offer.rawValue;
+
+  const finding = runEmploymentFactConsistencyRule(payload);
+  assert.equal(finding.status, "POSSIBLE_DISCREPANCY");
+  assert.ok(finding.diagnostics.includes("WORKSITE_DOCUMENT_CONFLICT"));
 });
 
 test("worksite event selection is order-independent and keeps calculation context aligned", () => {
@@ -518,6 +590,70 @@ test("mixed nonproductive-time events conservatively require human review", () =
   assert.equal(finding?.amountCents, undefined);
   assert.equal(finding?.calculation, null);
   assert.deepEqual(finding?.diagnostics, ["NPT_EVENTS_MIXED_CONTEXT"]);
+});
+
+test("overlapping possible nonproductive intervals are never double-counted", () => {
+  const payload = heroCase();
+  payload.events = [
+    payload.events.find((event) => event.id === "event-project-delay") as EmploymentEvent,
+    {
+      id: "event-overlapping-delay",
+      kind: "NONPRODUCTIVE_TIME",
+      title: "Overlapping project delay record",
+      start: "2026-05-10",
+      end: "2026-05-24",
+      certainty: "CONFIRMED",
+      attribution: "EMPLOYER",
+      workerAvailable: true,
+      employmentActive: true,
+      voluntaryLeave: false,
+      observedBaseCents: 0,
+      evidence: [
+        evidence(
+          "span-overlapping-delay",
+          "Second project-delay record",
+          "Remain available while the project is delayed.",
+          "context",
+        ),
+      ],
+    },
+  ];
+
+  const finding = runNonproductiveTimeRule(payload);
+  assert.equal(finding.status, "HUMAN_REVIEW_REQUIRED");
+  assert.equal(finding.amountCents, undefined);
+  assert.equal(finding.calculation, null);
+  assert.deepEqual(finding.diagnostics, ["NPT_EVENTS_OVERLAP"]);
+});
+
+test("adjacent possible nonproductive intervals can still be summed", () => {
+  const payload = heroCase();
+  const first = payload.events.find(
+    (event) => event.id === "event-project-delay",
+  ) as EmploymentEvent;
+  payload.events = [
+    first,
+    {
+      ...first,
+      id: "event-adjacent-delay",
+      start: first.end as string,
+      end: "2026-06-01",
+      evidence: [
+        evidence(
+          "span-adjacent-delay",
+          "Adjacent project-delay record",
+          "The delay continued into the next separate interval.",
+          "context",
+        ),
+      ],
+    },
+  ];
+
+  const finding = runNonproductiveTimeRule(payload);
+  assert.equal(finding.status, "POSSIBLE_DISCREPANCY");
+  assert.equal(finding.amountCents, 923_076);
+  assert.notEqual(finding.calculation, null);
+  assert.ok(!finding.diagnostics.includes("NPT_EVENTS_OVERLAP"));
 });
 
 test("duplicate OCR deduction observations are counted once", () => {

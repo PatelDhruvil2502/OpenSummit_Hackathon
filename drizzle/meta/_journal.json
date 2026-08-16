@@ -26,15 +26,36 @@
     {
       "idx": 3,
       "version": "6",
-      "when": 1786779000000,
-      "tag": "0004_accounts",
+      "when": 1786778990000,
+      "tag": "0003_production_integrity",
       "breakpoints": true
     },
     {
       "idx": 4,
       "version": "6",
+      "when": 1786779000000,
+      "tag": "0004_accounts",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
       "when": 1786779100000,
       "tag": "0005_auth_rate_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1786915249760,
+      "tag": "0006_password_resets",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1786916127498,
+      "tag": "0007_policy_consent",
       "breakpoints": true
     }
   ]

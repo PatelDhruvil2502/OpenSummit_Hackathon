@@ -1,6 +1,5 @@
 import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from "pdf-lib";
 import { formatCents } from "./money";
-import { sha256 } from "./storage";
 import type { CasePayload, Finding } from "./types";
 
 const PAGE_WIDTH = 612;
@@ -14,10 +13,19 @@ const SLATE = rgb(0.29, 0.36, 0.4);
 const LIGHT = rgb(0.94, 0.955, 0.95);
 const WHITE = rgb(1, 1, 1);
 
+async function sha256(value: string | Uint8Array): Promise<string> {
+  const bytes: Uint8Array<ArrayBuffer> =
+    typeof value === "string" ? new TextEncoder().encode(value) : new Uint8Array(value);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 export interface ReportOptions {
   includedFindingIds: string[];
   redactWorkerName: boolean;
   redactEmployerName: boolean;
+  includeCaseTitle: boolean;
+  includePosition: boolean;
 }
 
 export interface GeneratedReport {
@@ -41,6 +49,29 @@ interface WriterState {
   mono: PDFFont;
   page: PDFPage;
   y: number;
+}
+
+export function correctionsForSelectedFindings(
+  caseData: CasePayload,
+  findings: Finding[],
+): CasePayload["corrections"] {
+  const selectedEvidenceIds = new Set(
+    findings.flatMap((finding) => finding.evidence.map((item) => item.id)),
+  );
+  const selectedRecordIds = new Set([
+    ...caseData.facts
+      .filter((fact) => selectedEvidenceIds.has(fact.evidence.id))
+      .map((fact) => fact.id),
+    ...caseData.payPeriods
+      .filter((period) => selectedEvidenceIds.has(period.evidence.id))
+      .map((period) => period.id),
+    ...caseData.deductions
+      .filter((deduction) => selectedEvidenceIds.has(deduction.evidence.id))
+      .map((deduction) => deduction.id),
+  ]);
+  return caseData.corrections.filter((correction) =>
+    selectedRecordIds.has(correction.factId),
+  );
 }
 
 function wrapText(text: string, font: PDFFont, size: number, width: number): string[] {
@@ -265,6 +296,8 @@ function createTextRedactor(
       caseData.employerName.replace(/\b(?:LLC|L\.L\.C\.|INC\.?|CORP\.?|CORPORATION|LTD\.?)\b/gi, "").trim(),
     );
   }
+  if (!options.includeCaseTitle) identifiers.add(caseData.title);
+  if (!options.includePosition) identifiers.add(caseData.position);
   const patterns = Array.from(identifiers)
     .filter((value) => value.trim().length >= 3)
     .sort((left, right) => right.length - left.length)
@@ -294,12 +327,15 @@ export async function generateReportPdf(
     options.includedFindingIds.includes(finding.id),
   );
   if (!findings.length) throw new Error("Select at least one finding for the report");
+  const selectedCorrections = correctionsForSelectedFindings(caseData, findings);
   const redact = createTextRedactor(caseData, options);
 
   const generatedAt = new Date().toISOString();
   const redactions = [
     ...(options.redactWorkerName ? ["worker_name"] : []),
     ...(options.redactEmployerName ? ["employer_name"] : []),
+    ...(!options.includeCaseTitle ? ["case_title"] : []),
+    ...(!options.includePosition ? ["position"] : []),
   ];
   const manifestInput = JSON.stringify({
     caseId: caseData.id,
@@ -397,8 +433,8 @@ export async function generateReportPdf(
 
   newPage(state);
   heading(state, "Case snapshot");
-  labelValue(state, "Case title", redact(caseData.title));
-  labelValue(state, "Position", redact(caseData.position || "Not provided"));
+  labelValue(state, "Case title", options.includeCaseTitle ? redact(caseData.title) : "[OMITTED BY USER]");
+  labelValue(state, "Position", options.includePosition ? redact(caseData.position || "Not provided") : "[OMITTED BY USER]");
   labelValue(state, "Documents reviewed", String(caseData.documents.length));
   labelValue(state, "Findings selected", String(findings.length));
   labelValue(state, "Retention expiry", caseData.retentionExpiresAt);
@@ -435,9 +471,9 @@ export async function generateReportPdf(
 
   newPage(state);
   heading(state, "Corrections, assumptions, and method");
-  if (caseData.corrections.length) {
+  if (selectedCorrections.length) {
     paragraph(state, "User corrections", { size: 9, color: TEAL, gap: 4 });
-    caseData.corrections.forEach((correction) =>
+    selectedCorrections.forEach((correction) =>
       paragraph(
         state,
         redact(`Fact ${correction.factId}: ${correction.previousValue} → ${correction.newValue} (${correction.createdAt})`),
@@ -445,7 +481,7 @@ export async function generateReportPdf(
       ),
     );
   } else {
-    paragraph(state, "No user corrections were recorded in this snapshot.");
+    paragraph(state, "No user corrections apply to the selected evidence.");
   }
   paragraph(
     state,

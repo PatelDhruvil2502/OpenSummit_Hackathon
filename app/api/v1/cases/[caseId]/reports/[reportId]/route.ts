@@ -41,13 +41,9 @@ export async function DELETE(request: Request, context: Context) {
     if (knownInSnapshot) {
       caseData.reports = (caseData.reports ?? []).filter((report) => report.id !== reportId);
       if (caseData.lastReport?.id === reportId) {
-        const next = caseData.reports.at(-1);
-        if (next) {
-          next.status = "CURRENT";
-          caseData.lastReport = next;
-        } else {
-          delete caseData.lastReport;
-        }
+        // Older reports may describe superseded evidence. Deleting the current
+        // report must not silently relabel an older artifact as current.
+        delete caseData.lastReport;
       }
       await saveCase(caseData);
     }

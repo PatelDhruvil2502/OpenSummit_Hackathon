@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 import { extractDocument, extractionInternals } from "./extraction";
+import { UPLOAD_POLICY } from "./product-config";
 
 async function textPdf(lines: string[]): Promise<Uint8Array> {
   const document = await PDFDocument.create();
@@ -88,4 +89,16 @@ test("images explicitly require visual review", async () => {
   assert.equal(extraction.method, "IMAGE_REVIEW_REQUIRED");
   assert.equal(extraction.facts.length, 0);
   assert.match(extraction.warnings[0], /did not guess/i);
+});
+
+test("rejects an excessive PDF page count before extracting page text", async () => {
+  const document = await PDFDocument.create();
+  for (let index = 0; index <= UPLOAD_POLICY.maximumPdfPages; index += 1) {
+    document.addPage([72, 72]);
+  }
+  const bytes = await document.save({ useObjectStreams: false });
+  await assert.rejects(
+    extractDocument(bytes, "application/pdf", "OTHER"),
+    /DOCUMENT_PAGE_LIMIT_EXCEEDED/,
+  );
 });

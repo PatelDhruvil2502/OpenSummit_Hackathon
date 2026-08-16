@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
-import { ArrowRight, CalendarDays, Files, FolderOpen, LoaderCircle, Plus } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { ArrowRight, CalendarClock, CalendarDays, Files, FolderOpen, LoaderCircle, Plus } from "lucide-react";
+import { API_POLICY } from "@/lib/product-config";
 import type { CaseSummary } from "@/lib/types";
 
 const STATE_LABELS: Record<string, string> = {
@@ -26,8 +27,8 @@ const STATE_LABELS: Record<string, string> = {
 
 async function fetchCases(cursor: string | null) {
   const url = cursor
-    ? `/api/v1/cases?limit=25&cursor=${encodeURIComponent(cursor)}`
-    : "/api/v1/cases?limit=25";
+    ? `/api/v1/cases?limit=${API_POLICY.defaultCasePageSize}&cursor=${encodeURIComponent(cursor)}`
+    : `/api/v1/cases?limit=${API_POLICY.defaultCasePageSize}`;
   const response = await fetch(url, { cache: "no-store", credentials: "same-origin" });
   const payload = (await response.json()) as {
     cases?: CaseSummary[];
@@ -52,6 +53,8 @@ export function CasesList() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
 
+  const [reloadToken, setReloadToken] = useState(0);
+
   useEffect(() => {
     let active = true;
     fetchCases(null)
@@ -59,12 +62,22 @@ export function CasesList() {
         if (!active || !page) return;
         setCases(page.cases);
         setNextCursor(page.nextCursor);
+        setError("");
       })
-      .catch((caught) => active && setError(caught instanceof Error ? caught.message : "Unable to load reviews"))
+      .catch(
+        (caught) =>
+          active && setError(caught instanceof Error ? caught.message : "Unable to load reviews"),
+      )
       .finally(() => active && setLoading(false));
     return () => {
       active = false;
     };
+  }, [reloadToken]);
+
+  const loadFirstPage = useCallback(() => {
+    setLoading(true);
+    setError("");
+    setReloadToken((token) => token + 1);
   }, []);
 
   async function loadMore() {
@@ -85,13 +98,23 @@ export function CasesList() {
 
   if (loading) {
     return (
-      <div className="cases-loading" role="status">
+      <div className="cases-loading" role="status" aria-live="polite">
         <LoaderCircle className="spin" size={20} /> Loading private reviews…
       </div>
     );
   }
 
-  if (error && !cases.length) return <div className="empty-panel"><strong>Reviews could not be loaded</strong><p>{error}</p></div>;
+  if (error && !cases.length) {
+    return (
+      <div className="empty-panel" role="alert">
+        <strong>Reviews could not be loaded</strong>
+        <p>{error}</p>
+        <button type="button" className="button button-secondary" onClick={loadFirstPage}>
+          Try again
+        </button>
+      </div>
+    );
+  }
 
   if (!cases.length) {
     return (
@@ -109,7 +132,12 @@ export function CasesList() {
       {error && <div className="empty-panel" role="alert"><strong>Could not load more reviews</strong><p>{error}</p></div>}
       <div className="case-card-grid">
         {cases.map((caseItem) => (
-          <Link className="case-card" href={`/cases/${caseItem.id}`} key={caseItem.id}>
+          <Link
+            className="case-card"
+            href={`/cases/${caseItem.id}`}
+            key={caseItem.id}
+            aria-label={`Open ${caseItem.title}, ${STATE_LABELS[caseItem.state] ?? caseItem.state.replaceAll("_", " ")}`}
+          >
             <div className="case-card-head">
               <span className={`case-state state-${caseItem.state.toLowerCase()}`}>
                 {STATE_LABELS[caseItem.state] ?? caseItem.state.replaceAll("_", " ")}
@@ -120,19 +148,27 @@ export function CasesList() {
             <p>{caseItem.employerName || "Employer not entered"}</p>
             <div className="case-card-meta">
               <span><CalendarDays size={13} /> {caseItem.reviewStart} – {caseItem.reviewEnd}</span>
-              <span><Files size={13} /> {caseItem.documentCount} documents</span>
+              <span><Files size={13} /> {caseItem.documentCount} document{caseItem.documentCount === 1 ? "" : "s"}</span>
+              <span>
+                <CalendarClock size={13} /> Expires{" "}
+                <time dateTime={caseItem.retentionExpiresAt}>
+                  {new Date(caseItem.retentionExpiresAt).toLocaleString()}
+                </time>
+              </span>
             </div>
             <div className="case-card-foot">
               <span>{caseItem.mode === "SANDBOX" ? "Fictional sandbox" : "Private evidence review"}</span>
-              <small>Updated {new Date(caseItem.updatedAt).toLocaleDateString()}</small>
+              <small>Updated <time dateTime={caseItem.updatedAt}>{new Date(caseItem.updatedAt).toLocaleDateString()}</time></small>
             </div>
           </Link>
         ))}
-        <Link href="/cases/new" className="case-card case-card-new">
-          <span className="empty-icon"><Plus size={22} /></span>
-          <strong>Start another review</strong>
-          <p>Create a private workspace for authorized employment records.</p>
-        </Link>
+        {cases.length < API_POLICY.maximumActiveCases && (
+          <Link href="/cases/new" className="case-card case-card-new">
+            <span className="empty-icon"><Plus size={22} /></span>
+            <strong>Start another review</strong>
+            <p>Create a private workspace for authorized employment records.</p>
+          </Link>
+        )}
       </div>
       {nextCursor && (
         <div className="cases-load-more">

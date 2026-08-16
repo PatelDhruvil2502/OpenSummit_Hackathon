@@ -1,4 +1,5 @@
 import { SOURCE_CORPUS_VERSION, SOURCES } from "./sources";
+import { FINDING_RULE_VERSIONS, RULE_SET_VERSION } from "./versions";
 import type {
   CasePayload,
   DeductionObservation,
@@ -16,13 +17,6 @@ import type {
 const SYNTHETIC_WATERMARK =
   "FICTIONAL SYNTHETIC DATA - NOT A REAL PERSON OR EMPLOYER.";
 const CONSENT_VERSION = "2026-08-15.1";
-const RULE_SET_VERSION = "wageshield.rules.1.1.0";
-const FINDING_RULE_VERSIONS = {
-  WAGE_BENCHMARK: "wage_benchmark.v1.1.0",
-  NONPRODUCTIVE_TIME: "nonproductive_time.v1.1.0",
-  DEDUCTIONS_FEES: "deductions_fees.v1.1.0",
-  EMPLOYMENT_FACTS: "employment_facts.v1.1.0",
-} satisfies Record<FindingModule, string>;
 const DEFAULT_RETENTION_HOURS = 24;
 const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;

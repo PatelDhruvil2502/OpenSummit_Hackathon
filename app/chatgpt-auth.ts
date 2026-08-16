@@ -13,7 +13,7 @@ export type ChatGPTUser = AuthenticatedUser;
 export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
   const requestHeaders = await headers();
   return (
-    getUserFromHeaders(requestHeaders) ??
+    (await getUserFromHeaders(requestHeaders)) ??
     (await getAccountFromCookie(requestHeaders.get("cookie")))
   );
 }
@@ -21,7 +21,7 @@ export async function getChatGPTUser(): Promise<ChatGPTUser | null> {
 export async function requireChatGPTUser(returnTo: string): Promise<ChatGPTUser> {
   const requestHeaders = await headers();
   const user =
-    getUserFromHeaders(requestHeaders) ??
+    (await getUserFromHeaders(requestHeaders)) ??
     (await getAccountFromCookie(requestHeaders.get("cookie")));
   if (user) return user;
   redirect(signInPath(requestHeaders, returnTo));

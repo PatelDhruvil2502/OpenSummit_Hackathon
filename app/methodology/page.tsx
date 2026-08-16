@@ -56,8 +56,10 @@ export default function MethodologyPage() {
             <span className="eyebrow">What the system checks</span>
             <h2>Evidence before explanation</h2>
             <p>
-              A finding cannot publish without an accepted rule result, same-case evidence references, an approved
-              source mapping, and explicit assumptions and limitations. Monetary findings also require a reproducible calculation.
+              Every result comes from an accepted rule result, an approved source mapping, and explicit assumptions
+              and limitations. Supported findings keep same-case evidence references, while a more-evidence-needed
+              result names the missing source instead of inventing a citation. Monetary comparisons also include a
+              reproducible calculation.
             </p>
             <ul className="method-list">
               <li><CheckCircle2 size={16} /> Ordinary base pay is kept separate from bonuses, taxes, and deductions.</li>

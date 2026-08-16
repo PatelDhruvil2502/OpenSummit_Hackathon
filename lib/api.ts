@@ -1,7 +1,15 @@
 import type { ZodError } from "zod";
 import { signInPathForRequest } from "./identity";
 import { jsonResponse } from "./session";
-import { CaseVersionConflictError, DeletionVerificationError } from "./storage";
+import {
+  AccountDeletionPendingError,
+  ActiveCaseQuotaError,
+  CaseDeletionPendingError,
+  CaseStorageQuotaError,
+  CaseVersionConflictError,
+  DeletionVerificationError,
+  ReportQuotaError,
+} from "./storage";
 
 export type ErrorCode =
   | "AUTHENTICATION_REQUIRED"
@@ -92,6 +100,21 @@ export function internalError(error?: unknown): Response {
       503,
       true,
     );
+  }
+  if (error instanceof ActiveCaseQuotaError) {
+    return errorResponse("CASE_QUOTA_EXCEEDED", error.message, 409);
+  }
+  if (error instanceof AccountDeletionPendingError) {
+    return errorResponse("INVALID_REQUEST", error.message, 409);
+  }
+  if (error instanceof CaseStorageQuotaError) {
+    return errorResponse("CASE_QUOTA_EXCEEDED", error.message, 409);
+  }
+  if (error instanceof ReportQuotaError) {
+    return errorResponse("CASE_QUOTA_EXCEEDED", error.message, 409);
+  }
+  if (error instanceof CaseDeletionPendingError) {
+    return errorResponse("INVALID_REQUEST", error.message, 409);
   }
   if (error instanceof Error && error.message.startsWith("INVALID_CASE_TRANSITION:")) {
     return errorResponse(

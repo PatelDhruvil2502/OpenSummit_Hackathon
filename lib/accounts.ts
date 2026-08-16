@@ -105,10 +105,17 @@ export async function createAccount(
   email: string,
   password: string,
   displayName: string,
+  policyVersion: string,
 ): Promise<{ ok: true; user: AuthenticatedUser } | { ok: false; reason: "exists" | "invalid" }> {
   const normalizedEmail = normalizeEmail(email);
   const name = displayName.trim().slice(0, 100);
-  if (!validEmail(normalizedEmail) || !validPassword(password) || !name) {
+  const acceptedPolicy = policyVersion.trim();
+  if (
+    !validEmail(normalizedEmail) ||
+    !validPassword(password) ||
+    !name ||
+    !/^[A-Za-z0-9._-]{1,32}$/.test(acceptedPolicy)
+  ) {
     return { ok: false, reason: "invalid" };
   }
   await ensureStorage();
@@ -118,10 +125,12 @@ export async function createAccount(
   try {
     await database()
       .prepare(
-        `INSERT INTO accounts (id, email, display_name, password_hash, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO accounts (
+          id, email, display_name, password_hash,
+          policy_accepted_at, policy_version, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .bind(id, normalizedEmail, name, passwordHash, now, now)
+      .bind(id, normalizedEmail, name, passwordHash, now, acceptedPolicy, now, now)
       .run();
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
@@ -185,19 +194,34 @@ export async function createSession(userId: string, secure: boolean): Promise<st
   return authCookie(token, secure, SESSION_MAX_AGE_SECONDS);
 }
 
+export type AuthAction = "signin" | "signup" | "reset";
+
 function clientIp(request: Request): string {
-  const forwarded = request.headers.get("cf-connecting-ip") ?? request.headers.get("x-forwarded-for")?.split(",")[0];
-  return (forwarded ?? "local").trim().slice(0, 128) || "local";
+  // Cloudflare supplies and protects this header. Do not trust X-Forwarded-For
+  // on a directly addressable Worker because the client can choose its value.
+  const connectingIp = request.headers.get("cf-connecting-ip");
+  return (connectingIp ?? "local").trim().slice(0, 128) || "local";
+}
+
+async function authBuckets(
+  request: Request,
+  action: AuthAction,
+  email: string,
+): Promise<string[]> {
+  const materials = [`${action}:ip:${clientIp(request)}`];
+  const normalizedEmail = normalizeEmail(email).slice(0, 254);
+  if (normalizedEmail) materials.push(`${action}:email:${normalizedEmail}`);
+  return Promise.all(materials.map(async (value) => `rl_${await sha256Hex(value)}`));
 }
 
 export async function isAuthLocked(
   request: Request,
-  action: "signin" | "signup",
+  action: AuthAction,
   email: string,
 ): Promise<{ ok: true } | { ok: false; retryAfterSeconds: number }> {
   await ensureStorage();
   const now = Date.now();
-  const buckets = authBuckets(request, action, email);
+  const buckets = await authBuckets(request, action, email);
   for (const bucket of buckets) {
     const row = await database()
       .prepare("SELECT locked_until FROM auth_rate_limits WHERE bucket = ? LIMIT 1")
@@ -213,54 +237,59 @@ export async function isAuthLocked(
 
 export async function recordAuthAttempt(
   request: Request,
-  action: "signin" | "signup",
+  action: AuthAction,
   email: string,
 ): Promise<void> {
   await ensureStorage();
   const now = Date.now();
-  const windowMs = action === "signup" ? 60 * 60 * 1000 : 15 * 60 * 1000;
-  const maxAttempts = action === "signup" ? 12 : 10;
-  for (const bucket of authBuckets(request, action, email)) {
-    const row = await database()
-      .prepare(
-        "SELECT attempt_count, window_started_at FROM auth_rate_limits WHERE bucket = ? LIMIT 1",
-      )
-      .bind(bucket)
-      .first<{ attempt_count: number; window_started_at: string }>();
-    const windowStart = row ? Date.parse(row.window_started_at) : now;
-    const inWindow = Number.isFinite(windowStart) && now - windowStart < windowMs;
-    const count = inWindow ? (row?.attempt_count ?? 0) + 1 : 1;
-    const nextLock = count >= maxAttempts ? new Date(now + windowMs).toISOString() : null;
+  const windowMs = action === "signin" ? 15 * 60 * 1000 : 60 * 60 * 1000;
+  const maxAttempts = action === "signin" ? 10 : action === "signup" ? 12 : 6;
+  const nowIso = new Date(now).toISOString();
+  const cutoff = new Date(now - windowMs).toISOString();
+  const nextLock = new Date(now + windowMs).toISOString();
+  for (const bucket of await authBuckets(request, action, email)) {
     await database()
       .prepare(
         `INSERT INTO auth_rate_limits (bucket, attempt_count, window_started_at, locked_until)
-          VALUES (?, ?, ?, ?)
+          VALUES (?, 1, ?, NULL)
           ON CONFLICT(bucket) DO UPDATE SET
-            attempt_count = excluded.attempt_count,
-            window_started_at = excluded.window_started_at,
-            locked_until = excluded.locked_until`,
+            locked_until = CASE
+              WHEN auth_rate_limits.window_started_at > ?
+                AND auth_rate_limits.attempt_count + 1 >= ? THEN ?
+              ELSE NULL
+            END,
+            attempt_count = CASE
+              WHEN auth_rate_limits.window_started_at > ?
+                THEN auth_rate_limits.attempt_count + 1
+              ELSE 1
+            END,
+            window_started_at = CASE
+              WHEN auth_rate_limits.window_started_at > ?
+                THEN auth_rate_limits.window_started_at
+              ELSE excluded.window_started_at
+            END`,
       )
       .bind(
         bucket,
-        count,
-        inWindow && row ? row.window_started_at : new Date(now).toISOString(),
+        nowIso,
+        cutoff,
+        maxAttempts,
         nextLock,
+        cutoff,
+        cutoff,
       )
       .run();
   }
 }
 
-function authBuckets(request: Request, action: "signin" | "signup", email: string): string[] {
-  const buckets = [`${action}:ip:${clientIp(request)}`];
-  if (email) buckets.push(`${action}:email:${normalizeEmail(email)}`);
-  return buckets;
-}
-
-export async function clearAuthRateLimit(request: Request, email: string): Promise<void> {
+export async function clearAuthRateLimit(_request: Request, email: string): Promise<void> {
   await ensureStorage();
+  const normalizedEmail = normalizeEmail(email).slice(0, 254);
+  if (!normalizedEmail) return;
+  const emailBucket = `rl_${await sha256Hex(`signin:email:${normalizedEmail}`)}`;
   await database()
-    .prepare("DELETE FROM auth_rate_limits WHERE bucket IN (?, ?)")
-    .bind(`signin:ip:${clientIp(request)}`, `signin:email:${normalizeEmail(email)}`)
+    .prepare("DELETE FROM auth_rate_limits WHERE bucket = ?")
+    .bind(emailBucket)
     .run();
 }
 
@@ -271,6 +300,22 @@ export async function getAccountById(userId: string): Promise<AuthenticatedUser 
     .bind(userId)
     .first<{ id: string; email: string; display_name: string }>();
   return row ? toUser({ id: row.id, email: row.email, displayName: row.display_name }) : null;
+}
+
+export async function getAccountPolicyAcceptance(
+  userId: string,
+): Promise<{ acceptedAt: string; version: string } | null> {
+  await ensureStorage();
+  const row = await database()
+    .prepare(
+      `SELECT policy_accepted_at, policy_version FROM accounts
+        WHERE id = ? AND policy_accepted_at IS NOT NULL AND policy_version IS NOT NULL LIMIT 1`,
+    )
+    .bind(userId)
+    .first<{ policy_accepted_at: string; policy_version: string }>();
+  return row
+    ? { acceptedAt: row.policy_accepted_at, version: row.policy_version }
+    : null;
 }
 
 export async function updateAccount(
@@ -320,6 +365,80 @@ export async function updateAccount(
   return { ok: true, user: toUser({ id: userId, email, displayName: name }) };
 }
 
+/**
+ * Re-authenticates a local account before a destructive account-wide action.
+ * The lookup is by the authenticated account ID rather than a submitted email,
+ * so changing an email address cannot redirect the check to another account.
+ */
+export async function verifyAccountPasswordById(
+  userId: string,
+  password: string,
+): Promise<"verified" | "password" | "missing"> {
+  if (!password || password.length > 128) return "password";
+  await ensureStorage();
+  const row = await database()
+    .prepare("SELECT password_hash FROM accounts WHERE id = ? LIMIT 1")
+    .bind(userId)
+    .first<{ password_hash: string }>();
+  if (!row) {
+    // Keep the missing-account path computationally similar to a bad password.
+    await hashPassword("wageshield-dummy-password");
+    return "missing";
+  }
+  return (await verifyPassword(password, row.password_hash)) ? "verified" : "password";
+}
+
+/**
+ * Revokes every browser session before account deletion begins. A failed
+ * storage cleanup therefore cannot leave a destructive request authenticated;
+ * the owner can still sign in again and retry.
+ */
+export async function revokeAllSessions(userId: string): Promise<void> {
+  await ensureStorage();
+  await database().prepare("DELETE FROM auth_sessions WHERE account_id = ?").bind(userId).run();
+}
+
+/**
+ * Removes the local identity record after all owned cases have been verified
+ * deleted. The conditional delete prevents intentionally retained case data
+ * from becoming orphaned if cleanup was incomplete or a concurrent write won.
+ */
+export async function deleteAccountRecord(userId: string): Promise<boolean> {
+  await ensureStorage();
+  const results = await database().batch([
+    database()
+      .prepare(
+        `DELETE FROM auth_sessions
+          WHERE account_id = ?
+            AND NOT EXISTS (SELECT 1 FROM cases WHERE owner_user_id = ?)`,
+      )
+      .bind(userId, userId),
+    database()
+      .prepare(
+        `DELETE FROM password_resets
+          WHERE account_id = ?
+            AND NOT EXISTS (SELECT 1 FROM cases WHERE owner_user_id = ?)`,
+      )
+      .bind(userId, userId),
+    database()
+      .prepare(
+        `DELETE FROM idempotency_keys
+          WHERE owner_user_id = ?
+            AND operation_scope != 'account:deletion'
+            AND NOT EXISTS (SELECT 1 FROM cases WHERE owner_user_id = ?)`,
+      )
+      .bind(userId, userId),
+    database()
+      .prepare(
+        `DELETE FROM accounts
+          WHERE id = ?
+            AND NOT EXISTS (SELECT 1 FROM cases WHERE owner_user_id = ?)`,
+      )
+      .bind(userId, userId),
+  ]);
+  return Boolean(results[3]?.meta.changes);
+}
+
 export async function revokeOtherSessions(cookieHeader: string | null, userId: string): Promise<void> {
   const token = readAuthToken(cookieHeader);
   await ensureStorage();
@@ -363,10 +482,134 @@ export async function revokeSession(cookieHeader: string | null): Promise<void> 
 
 export async function purgeExpiredSessions(): Promise<void> {
   await ensureStorage();
+  const now = new Date().toISOString();
+  await database().prepare("DELETE FROM auth_sessions WHERE expires_at <= ?").bind(now).run();
+  await database().prepare("DELETE FROM password_resets WHERE expires_at <= ?").bind(now).run();
   await database()
-    .prepare("DELETE FROM auth_sessions WHERE expires_at <= ?")
-    .bind(new Date().toISOString())
+    .prepare(
+      `DELETE FROM auth_rate_limits
+        WHERE window_started_at <= ? AND (locked_until IS NULL OR locked_until <= ?)`,
+    )
+    .bind(new Date(Date.now() - 60 * 60 * 1000).toISOString(), now)
     .run();
+}
+
+export const PASSWORD_RESET_MINUTES = 30;
+
+/**
+ * Issues a single-use reset token. Returns null when no account matches, so the
+ * caller can respond identically either way and avoid account enumeration.
+ */
+export async function createPasswordReset(
+  email: string,
+): Promise<{ token: string; email: string } | null> {
+  const normalizedEmail = normalizeEmail(email);
+  if (!validEmail(normalizedEmail)) return null;
+  await ensureStorage();
+  const row = await database()
+    .prepare("SELECT id, email FROM accounts WHERE email = ? LIMIT 1")
+    .bind(normalizedEmail)
+    .first<{ id: string; email: string }>();
+  if (!row) return null;
+
+  const now = new Date();
+  const token = hex(crypto.getRandomValues(new Uint8Array(32)));
+  const resetId = `reset_${crypto.randomUUID()}`;
+  await database()
+    .prepare(
+      `INSERT INTO password_resets (id, account_id, token_hash, created_at, expires_at, used_at)
+        VALUES (?, ?, ?, ?, ?, NULL)
+        ON CONFLICT(account_id) DO UPDATE SET
+          id = excluded.id,
+          token_hash = excluded.token_hash,
+          created_at = excluded.created_at,
+          expires_at = excluded.expires_at,
+          used_at = NULL`,
+    )
+    .bind(
+      resetId,
+      row.id,
+      await sha256Hex(token),
+      now.toISOString(),
+      new Date(now.getTime() + PASSWORD_RESET_MINUTES * 60 * 1000).toISOString(),
+      )
+    .run();
+  return { token, email: row.email };
+}
+
+export function validResetToken(token: string): boolean {
+  return /^[a-f0-9]{64}$/i.test(token);
+}
+
+/** Avoid rendering a password form for an already used or expired token. */
+export async function passwordResetTokenIsUsable(token: string): Promise<boolean> {
+  if (!validResetToken(token)) return false;
+  await ensureStorage();
+  const row = await database()
+    .prepare(
+      `SELECT 1 AS usable FROM password_resets
+        WHERE token_hash = ? AND used_at IS NULL AND expires_at > ? LIMIT 1`,
+    )
+    .bind(await sha256Hex(token), new Date().toISOString())
+    .first<{ usable: number }>();
+  return Boolean(row?.usable);
+}
+
+/**
+ * Consumes a reset token and rotates the password. Every existing session for
+ * the account is revoked so a thief who already holds a cookie is logged out.
+ */
+export async function completePasswordReset(
+  token: string,
+  newPassword: string,
+): Promise<{ ok: true } | { ok: false; reason: "invalid" | "expired" | "weak" }> {
+  if (!validResetToken(token)) return { ok: false, reason: "invalid" };
+  if (!validPassword(newPassword)) return { ok: false, reason: "weak" };
+  await ensureStorage();
+  const tokenHash = await sha256Hex(token);
+  const row = await database()
+    .prepare(
+      `SELECT id, account_id, expires_at, used_at FROM password_resets
+        WHERE token_hash = ? LIMIT 1`,
+    )
+    .bind(tokenHash)
+    .first<{ id: string; account_id: string; expires_at: string; used_at: string | null }>();
+  if (!row || row.used_at) return { ok: false, reason: "invalid" };
+  if (Date.parse(row.expires_at) <= Date.now()) return { ok: false, reason: "expired" };
+
+  const passwordHash = await hashPassword(newPassword);
+  const now = new Date().toISOString();
+  const claim = `claim_${crypto.randomUUID()}`;
+  const results = await database().batch([
+    database()
+      .prepare(
+        `UPDATE password_resets SET used_at = ?
+          WHERE id = ? AND used_at IS NULL AND expires_at > ?`,
+      )
+      .bind(claim, row.id, now),
+    database()
+      .prepare(
+        `UPDATE accounts SET password_hash = ?, updated_at = ?
+          WHERE id = ? AND EXISTS (
+            SELECT 1 FROM password_resets WHERE id = ? AND used_at = ?
+          )`,
+      )
+      .bind(passwordHash, now, row.account_id, row.id, claim),
+    database()
+      .prepare(
+        `DELETE FROM auth_sessions WHERE account_id = ? AND EXISTS (
+          SELECT 1 FROM password_resets WHERE id = ? AND used_at = ?
+        )`,
+      )
+      .bind(row.account_id, row.id, claim),
+    database()
+      .prepare("DELETE FROM password_resets WHERE account_id = ? AND id = ? AND used_at = ?")
+      .bind(row.account_id, row.id, claim),
+  ]);
+  if (!results[0]?.meta.changes || !results[1]?.meta.changes) {
+    return { ok: false, reason: "invalid" };
+  }
+  return { ok: true };
 }
 
 export function readAuthToken(cookieHeader: string | null): string | null {

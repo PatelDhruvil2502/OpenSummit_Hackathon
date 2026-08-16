@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { authenticateCaseRequest } from "@/lib/case-auth";
 import { revokeOtherSessions, updateAccount } from "@/lib/accounts";
-import { mutationGuard } from "@/lib/security";
+import { mutationGuard, parseFormDataBody } from "@/lib/security";
 
 const ProfileSchema = z.object({
   full_name: z.string().trim().min(1).max(100),
@@ -19,7 +19,9 @@ export async function POST(request: Request) {
   const guarded = mutationGuard(request);
   if (guarded) return guarded;
 
-  const form = await request.formData();
+  const body = await parseFormDataBody(request);
+  if (!body.ok) return body.response;
+  const form = body.value;
   const parsed = ProfileSchema.safeParse({
     full_name: form.get("full_name"),
     email: form.get("email"),

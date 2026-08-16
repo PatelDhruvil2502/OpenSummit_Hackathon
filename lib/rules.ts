@@ -17,13 +17,7 @@ import type {
   FindingStatus,
   PayPeriod,
 } from "./types";
-
-const RULE_VERSIONS = {
-  WAGE_BENCHMARK: "wage_benchmark.v1.1.0",
-  NONPRODUCTIVE_TIME: "nonproductive_time.v1.1.0",
-  DEDUCTIONS_FEES: "deductions_fees.v1.1.0",
-  EMPLOYMENT_FACTS: "employment_facts.v1.1.0",
-} satisfies Record<FindingModule, string>;
+import { FINDING_RULE_VERSIONS as RULE_VERSIONS } from "./versions";
 
 const FACT_TYPES = {
   lcaAnnualWage: [
@@ -215,7 +209,9 @@ function buildFinding(
       context: contextConfidence(input.status),
     },
     diagnostics: Array.from(new Set(input.diagnostics)).sort(),
-    includeInReport: input.status !== "NO_MISMATCH_DETECTED",
+    // Reports are an explicit disclosure boundary. A finding is never selected
+    // merely because a rule gave it a higher-attention status.
+    includeInReport: false,
     disposition: "UNREVIEWED",
     ruleVersion: RULE_VERSIONS[module],
   };
@@ -239,6 +235,59 @@ function periodIsComparable(period: PayPeriod): boolean {
 
 function periodNeedsReview(period: PayPeriod): boolean {
   return period.reviewStatus === "NEEDS_REVIEW";
+}
+
+type ComparablePeriodSet = {
+  periods: PayPeriod[];
+  duplicates: PayPeriod[];
+  conflicts: PayPeriod[][];
+};
+
+/**
+ * A pay period is an interval, not a document line. The same interval can be
+ * supported by more than one uploaded record, but it must only contribute once
+ * to the wage arithmetic. Different reviewed base amounts for the same interval
+ * are a conflict that requires a person to resolve before any total is shown.
+ */
+function normalizeComparablePeriods(periods: PayPeriod[]): ComparablePeriodSet {
+  const byInterval = new Map<string, PayPeriod[]>();
+  for (const period of periods.filter(periodIsComparable)) {
+    const key = `${period.start}:${period.end}`;
+    const group = byInterval.get(key) ?? [];
+    group.push(period);
+    byInterval.set(key, group);
+  }
+
+  const normalized: PayPeriod[] = [];
+  const duplicates: PayPeriod[] = [];
+  const conflicts: PayPeriod[][] = [];
+  for (const group of byInterval.values()) {
+    const ordered = [...group].sort(
+      (left, right) =>
+        left.start.localeCompare(right.start) ||
+        left.end.localeCompare(right.end) ||
+        left.id.localeCompare(right.id),
+    );
+    if (new Set(ordered.map((period) => period.ordinaryBaseCents)).size > 1) {
+      conflicts.push(ordered);
+      continue;
+    }
+    normalized.push(ordered[0]);
+    duplicates.push(...ordered.slice(1));
+  }
+
+  normalized.sort(
+    (left, right) =>
+      left.start.localeCompare(right.start) ||
+      left.end.localeCompare(right.end) ||
+      left.id.localeCompare(right.id),
+  );
+  conflicts.sort((left, right) =>
+    `${left[0]?.start}:${left[0]?.end}`.localeCompare(
+      `${right[0]?.start}:${right[0]?.end}`,
+    ),
+  );
+  return { periods: normalized, duplicates, conflicts };
 }
 
 export function runWageBenchmarkRule(payload: CasePayload): Finding {
@@ -309,9 +358,35 @@ export function runWageBenchmarkRule(payload: CasePayload): Finding {
     });
   }
 
-  const comparablePeriods = payload.payPeriods.filter(periodIsComparable);
+  const normalizedPeriods = normalizeComparablePeriods(payload.payPeriods);
+  const comparablePeriods = normalizedPeriods.periods;
   const excludedPeriods = payload.payPeriods.filter((period) => !periodIsComparable(period));
   const unreviewedPeriods = payload.payPeriods.filter(periodNeedsReview);
+  if (normalizedPeriods.conflicts.length > 0) {
+    const conflictingPeriods = normalizedPeriods.conflicts.flat();
+    return buildFinding(payload, "WAGE_BENCHMARK", {
+      status: "CONFLICTING_EVIDENCE",
+      headline: "Reviewed pay records disagree for the same pay period",
+      summary:
+        "Two or more reviewed records assign different ordinary base-pay amounts to the same period, so WageShield cannot choose an amount automatically.",
+      calculation: null,
+      evidence: [
+        ...lcaEvidence,
+        ...payFrequencyFacts.map((fact) => fact.evidence),
+        ...conflictingPeriods.map((period) => period.evidence),
+      ],
+      assumptions: [],
+      limitations: [
+        "No wage total is published until the conflicting period records are reconciled.",
+      ],
+      questions: [
+        "Is one record a corrected or superseded pay statement for the same period?",
+      ],
+      diagnostics: ["WAGE_PERIOD_CONFLICT"],
+      confidenceFacts: [...allLcaFacts, ...payFrequencyFacts],
+      confidenceEvidenceTarget: 2,
+    });
+  }
   if (comparablePeriods.length === 0) {
     const hasPeriodContext = payload.payPeriods.length > 0;
     const reviewNeeded = unreviewedPeriods.length > 0;
@@ -383,6 +458,9 @@ export function runWageBenchmarkRule(payload: CasePayload): Finding {
   ];
   if (excludedPeriods.length > 0) diagnostics.push("WAGE_PERIODS_EXCLUDED_FROM_AGGREGATE");
   if (unreviewedPeriods.length > 0) diagnostics.push("WAGE_PERIOD_REVIEW_REQUIRED");
+  if (normalizedPeriods.duplicates.length > 0) {
+    diagnostics.push("WAGE_DUPLICATE_PERIODS_COLLAPSED");
+  }
   if (offerFact && moneyFactCents(offerFact) !== annualCents) {
     diagnostics.push("WAGE_OFFER_RATE_DIFFERS");
   }
@@ -424,7 +502,7 @@ export function runWageBenchmarkRule(payload: CasePayload): Finding {
           value: formatCents(expectedPerPeriod),
         },
         {
-          label: `Expected base across ${comparablePeriods.length} periods`,
+          label: `Expected base across ${comparablePeriods.length} period${comparablePeriods.length === 1 ? "" : "s"}`,
           value: formatCents(expectedTotal),
         },
         {
@@ -444,6 +522,7 @@ export function runWageBenchmarkRule(payload: CasePayload): Finding {
       lcaValues[0].fact.evidence,
       ...(offerFact ? [offerFact.evidence] : []),
       ...comparablePeriods.map((period) => period.evidence),
+      ...normalizedPeriods.duplicates.map((period) => period.evidence),
       ...excludedPeriods.map((period) => period.evidence),
     ],
     assumptions: [
@@ -572,6 +651,31 @@ function evaluateNonproductiveEvent(
   };
 }
 
+function hasOverlappingIntervals(evaluations: NptEvaluation[]): boolean {
+  const intervals = evaluations
+    .filter(
+      (evaluation): evaluation is NptEvaluation & { event: EmploymentEvent & { end: string } } =>
+        Boolean(evaluation.event.end),
+    )
+    .map((evaluation) => ({
+      start: evaluation.event.start,
+      end: evaluation.event.end,
+    }))
+    .sort(
+      (left, right) =>
+        left.start.localeCompare(right.start) || left.end.localeCompare(right.end),
+    );
+
+  let latestEnd = "";
+  for (const interval of intervals) {
+    // Event intervals are half-open, so one ending exactly when the next starts
+    // is adjacent rather than overlapping.
+    if (latestEnd && interval.start < latestEnd) return true;
+    if (interval.end > latestEnd) latestEnd = interval.end;
+  }
+  return false;
+}
+
 export function runNonproductiveTimeRule(payload: CasePayload): Finding {
   const events = payload.events.filter((event) => event.kind === "NONPRODUCTIVE_TIME");
   const lcaFacts = acceptedFacts(factsOfType(payload, FACT_TYPES.lcaAnnualWage));
@@ -624,7 +728,10 @@ export function runNonproductiveTimeRule(payload: CasePayload): Finding {
   const allPossible = evaluations.every(
     (evaluation) => evaluation.status === "POSSIBLE_DISCREPANCY",
   );
-  const status: FindingStatus = mixedEvidence ? "HUMAN_REVIEW_REQUIRED" : selected.status;
+  const overlappingPossibleIntervals =
+    allPossible && evaluations.length > 1 && hasOverlappingIntervals(evaluations);
+  const status: FindingStatus =
+    mixedEvidence || overlappingPossibleIntervals ? "HUMAN_REVIEW_REQUIRED" : selected.status;
   const copy: Record<FindingStatus, { headline: string; summary: string }> = {
     POSSIBLE_DISCREPANCY: {
       headline:
@@ -657,6 +764,12 @@ export function runNonproductiveTimeRule(payload: CasePayload): Finding {
       summary:
         "The reviewed intervals lead to different pay, availability, or cause outcomes and should not be collapsed into one automatic discrepancy.",
     };
+  } else if (overlappingPossibleIntervals) {
+    copy.HUMAN_REVIEW_REQUIRED = {
+      headline: "The no-work intervals overlap and need reconciliation",
+      summary:
+        "More than one reviewed event covers the same calendar days, so summing them could count the same missing base pay twice.",
+    };
   } else if (allPossible && evaluations.length > 1) {
     copy.POSSIBLE_DISCREPANCY = {
       headline: "Multiple unpaid intervals may be related to employer-side delays",
@@ -667,11 +780,16 @@ export function runNonproductiveTimeRule(payload: CasePayload): Finding {
 
   const observed = selected.event.observedBaseCents;
   const aggregateAffected =
-    allPossible && evaluations.every((evaluation) => evaluation.affectedCents !== undefined)
+    allPossible &&
+    !overlappingPossibleIntervals &&
+    evaluations.every((evaluation) => evaluation.affectedCents !== undefined)
       ? evaluations.reduce((sum, evaluation) => sum + (evaluation.affectedCents ?? 0), 0)
       : selected.affectedCents;
   const calculation =
-    mixedEvidence || selected.benchmarkCents === undefined || selected.coveredDays === undefined
+    mixedEvidence ||
+    overlappingPossibleIntervals ||
+    selected.benchmarkCents === undefined ||
+    selected.coveredDays === undefined
       ? null
       : allPossible && evaluations.length > 1
         ? {
@@ -747,7 +865,9 @@ export function runNonproductiveTimeRule(payload: CasePayload): Finding {
     ],
     diagnostics: mixedEvidence
       ? ["NPT_EVENTS_MIXED_CONTEXT"]
-      : evaluations.map((evaluation) => evaluation.diagnostic),
+      : overlappingPossibleIntervals
+        ? ["NPT_EVENTS_OVERLAP"]
+        : evaluations.map((evaluation) => evaluation.diagnostic),
     confidenceFacts: lcaFacts,
     confidenceEvidenceTarget: 2,
   });
@@ -1034,22 +1154,64 @@ const STATE_ABBREVIATIONS: Record<string, string> = {
   wyoming: "wy",
 };
 
-function normalizeWorksite(value: string): string {
-  let normalized = value.toLowerCase();
-  for (const [state, abbreviation] of Object.entries(STATE_ABBREVIATIONS).sort(
-    ([left], [right]) => right.length - left.length,
-  )) {
-    normalized = normalized.replace(
-      new RegExp(`\\b${state.replace(/\s+/g, "\\s+")}\\b`, "g"),
-      abbreviation,
-    );
-  }
-  return normalized
-    .replace(/\b(?:united states(?: of america)?|usa|us)\b/g, " ")
-    .replace(/\b\d{5}(?:-\d{4})?\b/g, " ")
+const STATE_ALIASES = [
+  ...Object.entries(STATE_ABBREVIATIONS),
+  ...Array.from(new Set(Object.values(STATE_ABBREVIATIONS)), (code) => [code, code] as const),
+  ["d c", "dc"] as const,
+].sort(([left], [right]) => right.length - left.length);
+
+function cleanLocationPart(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
     .replace(/[^a-z0-9]+/g, " ")
     .trim()
     .replace(/\s+/g, " ");
+}
+
+function trailingCityAndState(
+  value: string,
+): { city: string; state: string } | null {
+  const normalized = cleanLocationPart(value);
+  for (const [alias, state] of STATE_ALIASES) {
+    if (normalized === alias) return { city: "", state };
+    if (normalized.endsWith(` ${alias}`)) {
+      const city = normalized.slice(0, -(alias.length + 1)).trim();
+      if (city) return { city, state };
+    }
+  }
+  return null;
+}
+
+function normalizeWorksite(value: string): string {
+  const prepared = value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\bd\s*\.?\s*c\.?\b/g, "dc")
+    .replace(/\b(?:united states(?: of america)?|usa|u\.?s\.?)\b/g, " ")
+    .replace(/\b\d{5}(?:-\d{4})?\b/g, " ");
+  const segments = prepared
+    .split(/[,;\n]+/)
+    .map(cleanLocationPart)
+    .filter(Boolean);
+  const last = segments.at(-1) ?? "";
+  const trailing = trailingCityAndState(last);
+
+  if (trailing?.city) {
+    // A comma-delimited "city state" tail is independent of any earlier street
+    // address segment, so compare only the material city/state pair.
+    return `${trailing.city} ${trailing.state}`;
+  }
+  if (trailing && segments.length >= 2) {
+    const city = segments.at(-2) ?? "";
+    if (city) return `${city} ${trailing.state}`;
+  }
+
+  // For non-address prose or non-U.S. locations, retain conservative exact
+  // normalization. We deliberately do not fuzzy-collapse unknown places.
+  return cleanLocationPart(prepared);
 }
 
 function eventDurationDays(event: EmploymentEvent): number | null {

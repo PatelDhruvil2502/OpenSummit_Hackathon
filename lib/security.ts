@@ -27,23 +27,89 @@ export function mutationGuard(request: Request): Response | null {
   return null;
 }
 
-export async function parseJsonBody(request: Request): Promise<
-  | { ok: true; value: unknown }
-  | { ok: false; response: Response }
-> {
-  const contentLength = Number(request.headers.get("content-length") ?? "0");
-  if (Number.isFinite(contentLength) && contentLength > 256 * 1024) {
+type LimitedBody =
+  | { ok: true; bytes: Uint8Array<ArrayBuffer> }
+  | { ok: false; response: Response };
+
+async function readLimitedBody(request: Request, maximumBytes: number): Promise<LimitedBody> {
+  const declared = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declared) && declared > maximumBytes) {
     return {
       ok: false,
       response: errorResponse("INVALID_REQUEST", "The request body is too large.", 413),
     };
   }
+  if (!request.body) return { ok: true, bytes: new Uint8Array() };
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
   try {
-    return { ok: true, value: await request.json() };
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maximumBytes) {
+        await reader.cancel();
+        return {
+          ok: false,
+          response: errorResponse("INVALID_REQUEST", "The request body is too large.", 413),
+        };
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return { ok: true, bytes };
+}
+
+export async function parseJsonBody(request: Request): Promise<
+  | { ok: true; value: unknown }
+  | { ok: false; response: Response }
+> {
+  const body = await readLimitedBody(request, 256 * 1024);
+  if (!body.ok) return body;
+  try {
+    return {
+      ok: true,
+      value: JSON.parse(new TextDecoder().decode(body.bytes)) as unknown,
+    };
   } catch {
     return {
       ok: false,
       response: errorResponse("INVALID_REQUEST", "Send a valid JSON request body.", 400),
+    };
+  }
+}
+
+export async function parseFormDataBody(
+  request: Request,
+  maximumBytes = 32 * 1024,
+): Promise<
+  | { ok: true; value: FormData }
+  | { ok: false; response: Response }
+> {
+  const body = await readLimitedBody(request, maximumBytes);
+  if (!body.ok) return body;
+  try {
+    const replay = new Request(request.url, {
+      method: request.method,
+      headers: request.headers,
+      body: body.bytes,
+    });
+    return { ok: true, value: await replay.formData() };
+  } catch {
+    return {
+      ok: false,
+      response: errorResponse("INVALID_REQUEST", "Send valid form data.", 400),
     };
   }
 }

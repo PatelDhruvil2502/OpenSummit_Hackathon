@@ -6,7 +6,8 @@ import {
   recordAuthAttempt,
 } from "@/lib/accounts";
 import { requestUsesHttps, safeRelativeReturnPath } from "@/lib/identity";
-import { mutationGuard } from "@/lib/security";
+import { mutationGuard, parseFormDataBody } from "@/lib/security";
+import { COMPANY } from "@/lib/company";
 
 const SignupSchema = z
   .object({
@@ -14,6 +15,7 @@ const SignupSchema = z
     email: z.string().trim().email().max(254),
     password: z.string().min(8).max(128),
     password_confirm: z.string().min(8).max(128).optional(),
+    terms_accepted: z.literal("1"),
     return_to: z.string().optional(),
   })
   .refine((value) => !value.password_confirm || value.password_confirm === value.password, {
@@ -24,7 +26,9 @@ const SignupSchema = z
 export async function POST(request: Request) {
   const guarded = mutationGuard(request);
   if (guarded) return guarded;
-  const form = await request.formData();
+  const body = await parseFormDataBody(request);
+  if (!body.ok) return body.response;
+  const form = body.value;
   const returnTo = safeRelativeReturnPath(
     typeof form.get("return_to") === "string" ? String(form.get("return_to")) : "/",
   );
@@ -39,6 +43,7 @@ export async function POST(request: Request) {
     email: form.get("email"),
     password: form.get("password"),
     password_confirm: form.get("password_confirm") || undefined,
+    terms_accepted: form.get("terms_accepted"),
     return_to: form.get("return_to") ?? undefined,
   });
   if (!parsed.success) {
@@ -50,6 +55,7 @@ export async function POST(request: Request) {
     parsed.data.email,
     parsed.data.password,
     parsed.data.full_name,
+    COMPANY.policyVersion,
   );
   await recordAuthAttempt(request, "signup", parsed.data.email);
   if (!created.ok) {

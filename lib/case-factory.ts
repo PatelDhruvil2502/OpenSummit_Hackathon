@@ -1,4 +1,5 @@
 import type { CasePayload } from "./types";
+import { RULE_SET_VERSION } from "./versions";
 
 export interface StandardCaseInput {
   title: string;
@@ -38,7 +39,7 @@ export function createStandardCase(
     ).toISOString(),
     createdAt,
     updatedAt: createdAt,
-    ruleSetVersion: "wageshield.rules.1.1.0",
+    ruleSetVersion: RULE_SET_VERSION,
     sourceCorpusVersion: "h1b_sources.2026-08-15",
     documents: [],
     facts: [],

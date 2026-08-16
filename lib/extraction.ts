@@ -1,4 +1,4 @@
-import { extractText } from "unpdf";
+import { API_POLICY, UPLOAD_POLICY } from "./product-config";
 
 export type ExtractionMethod = "PDF_TEXT_LAYER" | "IMAGE_REVIEW_REQUIRED";
 
@@ -46,9 +46,59 @@ export interface DocumentExtraction {
   warnings: string[];
 }
 
-const MAX_PAGES = 200;
+const MAX_PAGES = UPLOAD_POLICY.maximumPdfPages;
 const MAX_PAGE_CHARACTERS = 40_000;
 const MAX_TOTAL_CHARACTERS = 300_000;
+const MAX_PDF_IMAGE_PIXELS = 4_000_000;
+const PDF_PARSE_TIMEOUT_MS = 15_000;
+
+class PdfDomMatrix {
+  a = 1;
+  b = 0;
+  c = 0;
+  d = 1;
+  e = 0;
+  f = 0;
+
+  constructor(initial?: number[]) {
+    if (Array.isArray(initial) && initial.length === 6) {
+      [this.a, this.b, this.c, this.d, this.e, this.f] = initial;
+    }
+  }
+
+  translateSelf(x: number, y = 0): this {
+    this.e = this.a * x + this.c * y + this.e;
+    this.f = this.b * x + this.d * y + this.f;
+    return this;
+  }
+
+  scaleSelf(x: number, y = x): this {
+    this.a *= x;
+    this.b *= x;
+    this.c *= y;
+    this.d *= y;
+    return this;
+  }
+}
+
+/** PDF.js reads DOMMatrix while its module is evaluated, including in Workers. */
+async function loadPdfJs() {
+  const runtime = globalThis as unknown as { DOMMatrix?: typeof PdfDomMatrix };
+  runtime.DOMMatrix ??= PdfDomMatrix;
+  return import("pdfjs-dist");
+}
+
+function textContentToString(items: ReadonlyArray<unknown>): string {
+  let output = "";
+  for (const candidate of items) {
+    if (!candidate || typeof candidate !== "object" || !("str" in candidate)) continue;
+    const item = candidate as { str?: unknown; hasEOL?: unknown };
+    if (typeof item.str !== "string") continue;
+    output += item.str;
+    output += item.hasEOL === true ? "\n" : " ";
+  }
+  return output;
+}
 
 function cleanText(value: string): string {
   return value
@@ -359,6 +409,7 @@ const DATE_VALUE =
 function extractPayPeriods(pages: string[]): ProposedPayPeriod[] {
   const periods: ProposedPayPeriod[] = [];
   pages.forEach((pageText, pageIndex) => {
+    if (periods.length >= API_POLICY.maximumPayPeriodsPerCase) return;
     const range =
       new RegExp(
         `(?:pay\\s+period|period)(?:\\s+(?:begin|start|from))?\\s*[:\\-]?\\s*(${DATE_VALUE})\\s*(?:through|to|[-–—])\\s*(${DATE_VALUE})`,
@@ -416,6 +467,7 @@ function extractDeductions(pages: string[]): ProposedDeduction[] {
   pages.forEach((pageText, pageIndex) => {
     const lines = pageText.split("\n");
     lines.forEach((line) => {
+      if (deductions.length >= API_POLICY.maximumDeductionsPerCase) return;
       if (!relevant.test(line)) return;
       const amount = /(?:-\s*\$\s*|\$\s*-?)([\d,]+(?:\.\d{1,2})?)/.exec(line);
       if (!amount) return;
@@ -455,14 +507,54 @@ export async function extractDocument(
     };
   }
 
-  const result = await extractText(bytes, { mergePages: false });
-  if (result.totalPages > MAX_PAGES) throw new Error("DOCUMENT_PAGE_LIMIT_EXCEEDED");
-  let remaining = MAX_TOTAL_CHARACTERS;
-  const pages = result.text.map((page) => {
-    const cleaned = cleanText(page).slice(0, Math.min(MAX_PAGE_CHARACTERS, remaining));
-    remaining -= cleaned.length;
-    return cleaned;
+  const { getDocument, VerbosityLevel } = await loadPdfJs();
+  const loadingTask = getDocument({
+    data: bytes,
+    canvasMaxAreaInBytes: 16 * 1024 * 1024,
+    disableFontFace: true,
+    enableXfa: false,
+    isImageDecoderSupported: false,
+    isOffscreenCanvasSupported: false,
+    maxImageSize: MAX_PDF_IMAGE_PIXELS,
+    stopAtErrors: true,
+    useWasm: false,
+    useSystemFonts: true,
+    verbosity: VerbosityLevel.ERRORS,
   });
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    void loadingTask.destroy();
+  }, PDF_PARSE_TIMEOUT_MS);
+  let pageCount = 0;
+  let pages: string[] = [];
+  let remaining = MAX_TOTAL_CHARACTERS;
+  try {
+    const pdf = await loadingTask.promise;
+    pageCount = pdf.numPages;
+    if (pageCount > MAX_PAGES) throw new Error("DOCUMENT_PAGE_LIMIT_EXCEEDED");
+    pages = [];
+    for (let pageNumber = 1; pageNumber <= pageCount && remaining > 0; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber);
+      try {
+        const content = await page.getTextContent({ disableNormalization: false });
+        const cleaned = cleanText(textContentToString(content.items)).slice(
+          0,
+          Math.min(MAX_PAGE_CHARACTERS, remaining),
+        );
+        pages.push(cleaned);
+        remaining -= cleaned.length;
+      } finally {
+        page.cleanup();
+      }
+    }
+  } catch (error) {
+    if (timedOut) throw new Error("DOCUMENT_PARSE_TIMEOUT");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    await loadingTask.destroy();
+  }
   const characterCount = pages.reduce((total, page) => total + page.length, 0);
   const warnings: string[] = [];
   if (characterCount < 40) {
@@ -528,7 +620,7 @@ export async function extractDocument(
 
   return {
     method: "PDF_TEXT_LAYER",
-    pageCount: result.totalPages,
+    pageCount,
     characterCount,
     facts,
     payPeriods,

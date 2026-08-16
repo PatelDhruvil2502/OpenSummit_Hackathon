@@ -12,8 +12,18 @@ export async function SiteHeader() {
         <Brand />
         <nav className="site-nav" aria-label="Primary navigation">
           <Link href="/cases">My reviews</Link>
-          <Link href="/methodology">How it works</Link>
-          <Link href="/#privacy">Privacy</Link>
+          <span className="site-nav-links">
+            <Link href="/methodology">How it works</Link>
+            <Link href="/privacy">Privacy</Link>
+          </span>
+          <details className="site-info-menu">
+            <summary>Info</summary>
+            <div>
+              <Link href="/methodology">How it works</Link>
+              <Link href="/privacy">Privacy</Link>
+              <Link href="/security">Security</Link>
+            </div>
+          </details>
           {user ? (
             <details className="account-menu">
               <summary aria-label={`Account: ${user.displayName}`}>

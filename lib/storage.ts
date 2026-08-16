@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { API_POLICY, UPLOAD_POLICY } from "./product-config";
 import type {
   AuditEvent,
   CasePayload,
@@ -29,6 +30,41 @@ export class DeletionVerificationError extends Error {
   }
 }
 
+export class ActiveCaseQuotaError extends Error {
+  constructor() {
+    super(`An account can keep at most ${API_POLICY.maximumActiveCases} active reviews.`);
+    this.name = "ActiveCaseQuotaError";
+  }
+}
+
+export class CaseStorageQuotaError extends Error {
+  constructor() {
+    super("This review has reached its private document-storage limit.");
+    this.name = "CaseStorageQuotaError";
+  }
+}
+
+export class ReportQuotaError extends Error {
+  constructor() {
+    super(`A review can retain at most ${API_POLICY.maximumReportsPerCase} generated reports.`);
+    this.name = "ReportQuotaError";
+  }
+}
+
+export class CaseDeletionPendingError extends Error {
+  constructor() {
+    super("This review is locked for verified deletion.");
+    this.name = "CaseDeletionPendingError";
+  }
+}
+
+export class AccountDeletionPendingError extends Error {
+  constructor() {
+    super("This account is locked for verified deletion and cannot create new reviews.");
+    this.name = "AccountDeletionPendingError";
+  }
+}
+
 export interface StoredReportManifest {
   report_id: string;
   pdf_sha256: string;
@@ -41,9 +77,14 @@ export interface StoredReportManifest {
   redaction_method: string;
 }
 
-export interface IdempotentResponse {
+export type IdempotencyReference =
+  | { kind: "case"; caseId: string }
+  | { kind: "analysis"; caseId: string; analysisId: string }
+  | { kind: "report"; caseId: string; reportId: string };
+
+export interface IdempotentReplay {
   status: number;
-  body: unknown;
+  reference: IdempotencyReference;
 }
 
 type StoredCaseRow = {
@@ -209,8 +250,31 @@ export async function ensureStorage(): Promise<void> {
       window_started_at TEXT NOT NULL,
       locked_until TEXT
     )`,
+    `CREATE TABLE IF NOT EXISTS password_resets (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at TEXT
+    )`,
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_password_resets_account ON password_resets(account_id)",
+    "CREATE INDEX IF NOT EXISTS idx_password_resets_expiry ON password_resets(expires_at)",
+    "CREATE INDEX IF NOT EXISTS idx_auth_rate_limits_window ON auth_rate_limits(window_started_at)",
   ];
   await DB.batch(statements.map((statement) => DB.prepare(statement)));
+  await migrateColumn(
+    DB,
+    "accounts",
+    "policy_accepted_at",
+    "ALTER TABLE accounts ADD COLUMN policy_accepted_at TEXT",
+  );
+  await migrateColumn(
+    DB,
+    "accounts",
+    "policy_version",
+    "ALTER TABLE accounts ADD COLUMN policy_version TEXT",
+  );
   await migrateColumn(
     DB,
     "reports",
@@ -286,11 +350,18 @@ export async function claimLegacyCases(
 export async function createCase(caseData: CasePayload): Promise<CasePayload> {
   await ensureStorage();
   const { DB } = bindings();
-  await DB.prepare(
+  const result = await DB.prepare(
     `INSERT INTO cases (
       id, owner_user_id, scenario, title, state, state_version, worker_name, employer_name,
       review_start, review_end, payload_json, retention_expires_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      WHERE NOT EXISTS (
+        SELECT 1 FROM idempotency_keys
+        WHERE owner_user_id = ? AND operation_scope = 'account:deletion'
+      ) AND (
+        SELECT COUNT(*) FROM cases
+        WHERE owner_user_id = ? AND retention_expires_at > ?
+      ) < ?`,
   )
     .bind(
       caseData.id,
@@ -307,8 +378,22 @@ export async function createCase(caseData: CasePayload): Promise<CasePayload> {
       caseData.retentionExpiresAt,
       caseData.createdAt,
       caseData.updatedAt,
+      caseData.ownerUserId,
+      caseData.ownerUserId,
+      new Date().toISOString(),
+      API_POLICY.maximumActiveCases,
     )
     .run();
+  if (!result.meta.changes) {
+    const deletionLock = await DB.prepare(
+      `SELECT 1 AS locked FROM idempotency_keys
+        WHERE owner_user_id = ? AND operation_scope = 'account:deletion' LIMIT 1`,
+    )
+      .bind(caseData.ownerUserId)
+      .first<{ locked: number }>();
+    if (deletionLock) throw new AccountDeletionPendingError();
+    throw new ActiveCaseQuotaError();
+  }
   await appendAudit(caseData.id, "CASE_CREATED", {
     scenario: caseData.scenario,
     retentionHours: caseData.retentionHours,
@@ -330,7 +415,8 @@ export async function saveCase(caseData: CasePayload): Promise<CasePayload> {
   const result = await DB.prepare(
     `UPDATE cases SET title = ?, state = ?, state_version = ?, worker_name = ?, employer_name = ?,
       review_start = ?, review_end = ?, payload_json = ?, retention_expires_at = ?, updated_at = ?
-      WHERE id = ? AND owner_user_id = ? AND state_version = ?`,
+      WHERE id = ? AND owner_user_id = ? AND state_version = ?
+        AND state != 'DELETION_PENDING'`,
   )
     .bind(
       nextCase.title,
@@ -403,8 +489,10 @@ export async function listCases(
 ): Promise<{ cases: CaseSummary[]; nextCursor: string | null }> {
   await ensureStorage();
   const { DB } = bindings();
-  const parsedLimit = Math.trunc(options.limit ?? 25);
-  const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.min(50, parsedLimit)) : 25;
+  const parsedLimit = Math.trunc(options.limit ?? API_POLICY.defaultCasePageSize);
+  const limit = Number.isFinite(parsedLimit)
+    ? Math.max(1, Math.min(API_POLICY.maximumCasePageSize, parsedLimit))
+    : API_POLICY.defaultCasePageSize;
   const cursor = decodeCaseCursor(options.cursor ?? null);
   const result = await DB.prepare(
     `SELECT id, updated_at, payload_json, owner_user_id FROM cases
@@ -431,6 +519,55 @@ export async function listCases(
   };
 }
 
+export async function countActiveCases(ownerUserId: string): Promise<number> {
+  await ensureStorage();
+  const { DB } = bindings();
+  const row = await DB.prepare(
+    "SELECT COUNT(*) AS count FROM cases WHERE owner_user_id = ? AND retention_expires_at > ?",
+  )
+    .bind(ownerUserId, new Date().toISOString())
+    .first<{ count: number }>();
+  return Number(row?.count ?? 0);
+}
+
+export async function listOwnedCases(ownerUserId: string): Promise<CasePayload[]> {
+  await ensureStorage();
+  const { DB } = bindings();
+  const rows = await DB.prepare(
+    `SELECT payload_json, owner_user_id FROM cases
+      WHERE owner_user_id = ? AND retention_expires_at > ?
+      ORDER BY created_at ASC, id ASC`,
+  )
+    .bind(ownerUserId, new Date().toISOString())
+    .all<StoredCaseRow>();
+  return rows.results.map(parseStoredCase);
+}
+
+export async function listOwnedCaseIds(ownerUserId: string): Promise<string[]> {
+  await ensureStorage();
+  const { DB } = bindings();
+  const rows = await DB.prepare(
+    "SELECT id FROM cases WHERE owner_user_id = ? ORDER BY created_at ASC, id ASC",
+  )
+    .bind(ownerUserId)
+    .all<{ id: string }>();
+  return rows.results.map((row) => row.id);
+}
+
+export async function lockAccountDeletion(ownerUserId: string): Promise<void> {
+  await ensureStorage();
+  const { DB } = bindings();
+  const now = new Date().toISOString();
+  await DB.prepare(
+    `INSERT OR IGNORE INTO idempotency_keys (
+      owner_user_id, operation_scope, idempotency_key,
+      response_json, response_status, created_at, expires_at
+    ) VALUES (?, 'account:deletion', 'permanent-delete-lock', NULL, NULL, ?, '9999-12-31T23:59:59.999Z')`,
+  )
+    .bind(ownerUserId, now)
+    .run();
+}
+
 export async function storeDocument(
   caseData: CasePayload,
   document: DocumentRecord,
@@ -449,27 +586,50 @@ export async function storeDocument(
       retentionExpiresAt: caseData.retentionExpiresAt,
     },
   });
-  const stored = await DB.prepare(
-    `INSERT INTO document_objects (
-      id, case_id, object_key, original_name, content_type, byte_size, sha256, created_at
-    ) SELECT ?, ?, ?, ?, ?, ?, ?, ?
-      WHERE EXISTS (SELECT 1 FROM cases WHERE id = ? AND owner_user_id = ?)`,
-  )
-    .bind(
-      document.id,
-      caseData.id,
-      document.objectKey,
-      document.name,
-      document.contentType,
-      document.bytes,
-      document.hash,
-      document.uploadedAt,
-      caseData.id,
-      caseData.ownerUserId,
+  let stored;
+  try {
+    stored = await DB.prepare(
+      `INSERT INTO document_objects (
+        id, case_id, object_key, original_name, content_type, byte_size, sha256, created_at
+      ) SELECT ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE EXISTS (
+          SELECT 1 FROM cases
+          WHERE id = ? AND owner_user_id = ? AND state != 'DELETION_PENDING'
+        )
+          AND (SELECT COUNT(*) FROM document_objects WHERE case_id = ?) < ?
+          AND (SELECT COALESCE(SUM(byte_size), 0) FROM document_objects WHERE case_id = ?) + ? <= ?`,
     )
-    .run();
+      .bind(
+        document.id,
+        caseData.id,
+        document.objectKey,
+        document.name,
+        document.contentType,
+        document.bytes,
+        document.hash,
+        document.uploadedAt,
+        caseData.id,
+        caseData.ownerUserId,
+        caseData.id,
+        UPLOAD_POLICY.maximumCaseDocuments,
+        caseData.id,
+        document.bytes,
+        UPLOAD_POLICY.maximumCaseBytes,
+      )
+      .run();
+  } catch (error) {
+    await BUCKET.delete(document.objectKey);
+    throw error;
+  }
   if (!stored.meta.changes) {
     await BUCKET.delete(document.objectKey);
+    const owned = await DB.prepare(
+      "SELECT id, state FROM cases WHERE id = ? AND owner_user_id = ? LIMIT 1",
+    )
+      .bind(caseData.id, caseData.ownerUserId)
+      .first<{ id: string; state: string }>();
+    if (owned?.state === "DELETION_PENDING") throw new CaseDeletionPendingError();
+    if (owned) throw new CaseStorageQuotaError();
     throw new Error("Document owner authorization failed");
   }
   await appendAudit(caseData.id, "DOCUMENT_STORED", {
@@ -519,29 +679,48 @@ export async function storeReport(
       retentionExpiresAt: caseData.retentionExpiresAt,
     },
   });
-  const stored = await DB.prepare(
-    `INSERT INTO reports (
-      id, case_id, object_key, sha256, included_finding_ids_json,
-      manifest_json, case_snapshot_version, created_at
+  let stored;
+  try {
+    stored = await DB.prepare(
+      `INSERT INTO reports (
+        id, case_id, object_key, sha256, included_finding_ids_json,
+        manifest_json, case_snapshot_version, created_at
+      )
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE EXISTS (
+          SELECT 1 FROM cases
+          WHERE id = ? AND owner_user_id = ? AND state != 'DELETION_PENDING'
+        )
+          AND (SELECT COUNT(*) FROM reports WHERE case_id = ?) < ?`,
     )
-      SELECT ?, ?, ?, ?, ?, ?, ?, ?
-      WHERE EXISTS (SELECT 1 FROM cases WHERE id = ? AND owner_user_id = ?)`,
-  )
-    .bind(
-      reportId,
-      caseData.id,
-      objectKey,
-      sha256,
-      JSON.stringify(includedFindingIds),
-      JSON.stringify(manifest),
-      manifest.case_snapshot_version,
-      manifest.generated_at,
-      caseData.id,
-      caseData.ownerUserId,
-    )
-    .run();
+      .bind(
+        reportId,
+        caseData.id,
+        objectKey,
+        sha256,
+        JSON.stringify(includedFindingIds),
+        JSON.stringify(manifest),
+        manifest.case_snapshot_version,
+        manifest.generated_at,
+        caseData.id,
+        caseData.ownerUserId,
+        caseData.id,
+        API_POLICY.maximumReportsPerCase,
+      )
+      .run();
+  } catch (error) {
+    await BUCKET.delete(objectKey);
+    throw error;
+  }
   if (!stored.meta.changes) {
     await BUCKET.delete(objectKey);
+    const owned = await DB.prepare(
+      "SELECT state FROM cases WHERE id = ? AND owner_user_id = ? LIMIT 1",
+    )
+      .bind(caseData.id, caseData.ownerUserId)
+      .first<{ state: string }>();
+    if (owned?.state === "DELETION_PENDING") throw new CaseDeletionPendingError();
+    if (owned) throw new ReportQuotaError();
     throw new Error("Report owner authorization failed");
   }
   await appendAudit(caseData.id, "REPORT_GENERATED", {
@@ -618,6 +797,7 @@ export async function deleteReportObject(
 export async function listReports(
   caseId: string,
   ownerUserId: string,
+  snapshotReports?: ReadonlyArray<ReportRecord>,
 ): Promise<ReportRecord[]> {
   await ensureStorage();
   const { DB } = bindings();
@@ -638,6 +818,9 @@ export async function listReports(
       case_snapshot_version: number;
       created_at: string;
     }>();
+  const snapshotStatus = snapshotReports
+    ? new Map(snapshotReports.map((report) => [report.id, report.status]))
+    : null;
   return rows.results.map((row, index) => {
     let manifest: Partial<StoredReportManifest> = {};
     try {
@@ -653,7 +836,11 @@ export async function listReports(
       caseSnapshotVersion: manifest.case_snapshot_version ?? row.case_snapshot_version,
       includedFindingIds: manifest.included_finding_ids ?? JSON.parse(row.included_finding_ids_json),
       redactions: manifest.redactions ?? [],
-      status: index === 0 ? "CURRENT" : "SUPERSEDED",
+      status: snapshotStatus
+        ? (snapshotStatus.get(row.id) ?? "SUPERSEDED")
+        : index === 0
+          ? "CURRENT"
+          : "SUPERSEDED",
     };
   });
 }
@@ -702,14 +889,24 @@ export async function caseStorageUsage(
 export async function deleteCase(caseId: string, ownerUserId: string): Promise<boolean> {
   await ensureStorage();
   const { DB, BUCKET } = bindings();
-  const owned = await DB.prepare(
-    "SELECT id FROM cases WHERE id = ? AND owner_user_id = ? LIMIT 1",
-  )
-    .bind(caseId, ownerUserId)
-    .first<{ id: string }>();
-  if (!owned) return false;
-
   const requestedAt = new Date().toISOString();
+  const locked = await DB.prepare(
+    `UPDATE cases SET
+      state = 'DELETION_PENDING',
+      state_version = state_version + 1,
+      payload_json = json_set(
+        payload_json,
+        '$.state', 'DELETION_PENDING',
+        '$.stateVersion', state_version + 1,
+        '$.updatedAt', ?
+      ),
+      updated_at = ?
+      WHERE id = ? AND owner_user_id = ?`,
+  )
+    .bind(requestedAt, requestedAt, caseId, ownerUserId)
+    .run();
+  if (!locked.meta.changes) return false;
+
   const inventoriedObjects = await DB.prepare(
     `SELECT object_key FROM document_objects WHERE case_id = ?
       UNION ALL SELECT object_key FROM reports WHERE case_id = ?`,
@@ -736,6 +933,15 @@ export async function deleteCase(caseId: string, ownerUserId: string): Promise<b
     DB.prepare("DELETE FROM document_objects WHERE case_id = ?").bind(caseId),
     DB.prepare("DELETE FROM reports WHERE case_id = ?").bind(caseId),
     DB.prepare("DELETE FROM audit_events WHERE case_id = ?").bind(caseId),
+    DB.prepare(
+      `DELETE FROM idempotency_keys
+        WHERE owner_user_id = ? AND operation_scope != 'account:deletion'
+          AND (
+            operation_scope LIKE ?
+            OR json_extract(response_json, '$.caseId') = ?
+            OR json_extract(response_json, '$.case.id') = ?
+          )`,
+    ).bind(ownerUserId, `cases:${caseId}:%`, caseId, caseId),
     DB.prepare("DELETE FROM cases WHERE id = ? AND owner_user_id = ?").bind(
       caseId,
       ownerUserId,
@@ -749,6 +955,23 @@ export async function deleteCase(caseId: string, ownerUserId: string): Promise<b
     .bind(caseId)
     .first<{ id: string }>();
   if (remaining) throw new DeletionVerificationError(caseId);
+
+  // Catch an object write that began before the lock but became visible after
+  // the first inventory. Object writers also re-check the locked case state
+  // and clean their own object when their atomic DB insert is refused.
+  const lateObjects = new Set<string>();
+  for (const prefix of [`private/cases/${caseId}/`, `private/demo/${caseId}/`]) {
+    let cursor: string | undefined;
+    do {
+      const page = await BUCKET.list({ prefix, cursor, limit: 1000 });
+      page.objects.forEach((object) => lateObjects.add(object.key));
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+  }
+  for (const key of lateObjects) await BUCKET.delete(key);
+  for (const key of lateObjects) {
+    if (await BUCKET.head(key)) throw new DeletionVerificationError(caseId);
+  }
   return true;
 }
 
@@ -780,16 +1003,50 @@ function validIdempotencyKey(value: string): boolean {
   return /^[A-Za-z0-9._:-]{16,128}$/.test(value);
 }
 
+function validResourceId(value: unknown, prefix: string): value is string {
+  return typeof value === "string" && value.startsWith(prefix) && value.length <= 128;
+}
+
+function parseIdempotencyReference(value: string): IdempotencyReference | null {
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object" || !validResourceId(parsed.caseId, "case_")) {
+      return null;
+    }
+    if (parsed.kind === "case") return { kind: "case", caseId: parsed.caseId };
+    if (parsed.kind === "analysis" && validResourceId(parsed.analysisId, "analysis_")) {
+      return { kind: "analysis", caseId: parsed.caseId, analysisId: parsed.analysisId };
+    }
+    if (parsed.kind === "report" && validResourceId(parsed.reportId, "report_")) {
+      return { kind: "report", caseId: parsed.caseId, reportId: parsed.reportId };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function purgeExpiredIdempotencyKeys(): Promise<number> {
+  await ensureStorage();
+  const { DB } = bindings();
+  const result = await DB.prepare("DELETE FROM idempotency_keys WHERE expires_at <= ?")
+    .bind(new Date().toISOString())
+    .run();
+  return result.meta.changes ?? 0;
+}
+
 export async function reserveIdempotencyKey(
   ownerUserId: string,
   operationScope: string,
   key: string,
-): Promise<"RESERVED" | "IN_PROGRESS" | IdempotentResponse> {
+): Promise<"RESERVED" | "IN_PROGRESS" | IdempotentReplay> {
   if (!validIdempotencyKey(key)) throw new Error("INVALID_IDEMPOTENCY_KEY");
   await ensureStorage();
   const { DB } = bindings();
   const now = new Date();
-  await DB.prepare("DELETE FROM idempotency_keys WHERE expires_at <= ?").bind(now.toISOString()).run();
+  await DB.prepare("DELETE FROM idempotency_keys WHERE expires_at <= ?")
+    .bind(now.toISOString())
+    .run();
   const inserted = await DB.prepare(
     `INSERT OR IGNORE INTO idempotency_keys (
       owner_user_id, operation_scope, idempotency_key, created_at, expires_at
@@ -811,14 +1068,15 @@ export async function reserveIdempotencyKey(
     .bind(ownerUserId, operationScope, key)
     .first<{ response_json: string | null; response_status: number | null }>();
   if (!row?.response_json || !row.response_status) return "IN_PROGRESS";
-  return { status: row.response_status, body: JSON.parse(row.response_json) as unknown };
+  const reference = parseIdempotencyReference(row.response_json);
+  return reference ? { status: row.response_status, reference } : "IN_PROGRESS";
 }
 
 export async function completeIdempotencyKey(
   ownerUserId: string,
   operationScope: string,
   key: string,
-  response: IdempotentResponse,
+  replay: IdempotentReplay,
 ): Promise<void> {
   await ensureStorage();
   const { DB } = bindings();
@@ -827,8 +1085,8 @@ export async function completeIdempotencyKey(
       WHERE owner_user_id = ? AND operation_scope = ? AND idempotency_key = ?`,
   )
     .bind(
-      JSON.stringify(response.body),
-      response.status,
+      JSON.stringify(replay.reference),
+      replay.status,
       ownerUserId,
       operationScope,
       key,
@@ -859,18 +1117,20 @@ export async function appendAudit(
 ): Promise<void> {
   await ensureStorage();
   const { DB } = bindings();
-  await DB.prepare(
-    `INSERT INTO audit_events (id, case_id, event_type, safe_metadata_json, created_at)
-      VALUES (?, ?, ?, ?, ?)`,
-  )
-    .bind(
-      crypto.randomUUID(),
-      caseId,
-      eventType,
-      JSON.stringify(safeMetadata),
-      new Date().toISOString(),
-    )
-    .run();
+  const now = new Date().toISOString();
+  await DB.batch([
+    DB.prepare(
+      `INSERT INTO audit_events (id, case_id, event_type, safe_metadata_json, created_at)
+        VALUES (?, ?, ?, ?, ?)`,
+    ).bind(crypto.randomUUID(), caseId, eventType, JSON.stringify(safeMetadata), now),
+    DB.prepare(
+      `DELETE FROM audit_events
+        WHERE case_id = ? AND id NOT IN (
+          SELECT id FROM audit_events WHERE case_id = ?
+          ORDER BY created_at DESC, id DESC LIMIT ?
+        )`,
+    ).bind(caseId, caseId, API_POLICY.maximumAuditEventsPerCase),
+  ]);
 }
 
 export async function sha256(value: string | ArrayBuffer | Uint8Array): Promise<string> {

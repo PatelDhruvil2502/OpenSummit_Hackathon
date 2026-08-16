@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ArrowLeft, ShieldCheck, UserRound } from "lucide-react";
 import { requireChatGPTUser } from "@/app/chatgpt-auth";
+import { AccountDataControls } from "@/components/account-data-controls";
 import { Brand } from "@/components/brand";
 import { SiteHeader } from "@/components/site-header";
 import { getAccountById } from "@/lib/accounts";
@@ -114,6 +115,7 @@ export default async function AccountPage({
               <p>Signed in as {user.fullName ?? user.displayName} ({user.email}). This identity is supplied by the host and cannot be edited inside WageShield.</p>
             </div>
           )}
+          <AccountDataControls canDelete={editable} />
           <Link href="/cases" className="back-link">
             <ArrowLeft size={14} /> Back to reviews
           </Link>

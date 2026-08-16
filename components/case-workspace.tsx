@@ -43,6 +43,7 @@ import {
 } from "lucide-react";
 import { Brand } from "@/components/brand";
 import { formatCents, formatPercent } from "@/lib/money";
+import { RETENTION_POLICY, UPLOAD_POLICY } from "@/lib/product-config";
 import type {
   CasePayload,
   DeductionObservation,
@@ -102,6 +103,31 @@ const STATUS_META: Record<FindingStatus, { label: string; short: string; classNa
     short: "Human review",
     className: "status-review",
   },
+};
+
+const FINDING_STATUS_ORDER: FindingStatus[] = [
+  "POSSIBLE_DISCREPANCY",
+  "CONFLICTING_EVIDENCE",
+  "HUMAN_REVIEW_REQUIRED",
+  "INSUFFICIENT_EVIDENCE",
+  "NO_MISMATCH_DETECTED",
+];
+
+const ATTENTION_META: Record<Finding["attention"], { label: string; className: string }> = {
+  REVIEW_NOW: { label: "Review now", className: "attention-now" },
+  REVIEW_SOON: { label: "Review soon", className: "attention-soon" },
+  CONTEXT_NEEDED: { label: "Context needed", className: "attention-context" },
+  INFORMATIONAL: { label: "Informational", className: "attention-info" },
+};
+
+const DOCUMENT_STATUS_META: Record<
+  CasePayload["documents"][number]["status"],
+  { label: string; className: string }
+> = {
+  READY: { label: "Reviewed", className: "document-status-ready" },
+  PROCESSING: { label: "Processing", className: "document-status-processing" },
+  NEEDS_REVIEW: { label: "Review values", className: "document-status-review" },
+  REJECTED: { label: "Rejected", className: "document-status-rejected" },
 };
 
 const DOCUMENT_LABELS: Record<DocumentType, string> = {
@@ -167,6 +193,24 @@ function friendlyDate(value: string): string {
   return Number.isNaN(date.getTime())
     ? value
     : new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" }).format(date);
+}
+
+function friendlyDateTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function moduleLabel(module: FindingModule): string {
@@ -430,7 +474,7 @@ export function CaseWorkspace({ caseId }: { caseId: string }) {
                     : item.id === "findings"
                       ? caseData.findings.length
                       : item.id === "report"
-                        ? caseData.findings.filter((finding) => finding.includeInReport).length
+                        ? (caseData.reports ?? []).length
                         : undefined;
               return (
                 <button
@@ -563,6 +607,39 @@ function OverviewTab({
 }) {
   const reviewedFacts = caseData.facts.filter((fact) => fact.reviewStatus !== "NEEDS_REVIEW").length;
   const analyzeDisabled = busy || writesAreLocked || !analysisReady;
+  const pendingReviewCount =
+    caseData.facts.filter((fact) => fact.reviewStatus === "NEEDS_REVIEW").length +
+    caseData.payPeriods.filter((period) => period.reviewStatus === "NEEDS_REVIEW").length +
+    caseData.deductions.filter((deduction) => deduction.reviewStatus === "NEEDS_REVIEW").length;
+  const reviewSteps = [
+    {
+      id: "documents" as const,
+      label: "Documents",
+      complete: requiredReady === REQUIRED_DOCUMENTS.length,
+      detail: `${requiredReady} of ${REQUIRED_DOCUMENTS.length} required groups reviewed`,
+    },
+    {
+      id: "facts" as const,
+      label: "Fact review",
+      complete: Boolean(caseData.facts.length || caseData.payPeriods.length) && pendingReviewCount === 0,
+      detail: pendingReviewCount ? `${pendingReviewCount} proposal${pendingReviewCount === 1 ? "" : "s"} awaiting review` : `${reviewedFacts} reviewed values`,
+    },
+    {
+      id: "findings" as const,
+      label: "Evidence comparison",
+      complete: Boolean(caseData.findings.length && caseData.lastAnalysisAt),
+      detail: caseData.findings.length
+        ? `${new Set(caseData.findings.map((finding) => finding.module)).size} of ${Object.keys(MODULE_META).length} modules complete`
+        : "Available after fact review",
+    },
+    {
+      id: "report" as const,
+      label: "Report",
+      complete: Boolean(caseData.lastReport),
+      detail: caseData.lastReport ? "Current download available" : "Generated only from selected findings",
+    },
+  ];
+  const currentStepIndex = reviewSteps.findIndex((step) => !step.complete);
   return (
     <>
       <SectionTitle
@@ -589,7 +666,7 @@ function OverviewTab({
         </div>
       )}
       <div className="overview-metrics">
-        <article><span><Files size={18} /></span><strong>{requiredReady}/3</strong><small>required document groups ready</small></article>
+        <article><span><Files size={18} /></span><strong>{requiredReady}/{REQUIRED_DOCUMENTS.length}</strong><small>required document groups ready</small></article>
         <article><span><ListChecks size={18} /></span><strong>{reviewedFacts}/{caseData.facts.length || 0}</strong><small>material facts reviewed</small></article>
         <article><span><SearchCheck size={18} /></span><strong>{possibleCount}</strong><small>possible documentary differences</small></article>
         <article><span><Eye size={18} /></span><strong>{reviewCount}</strong><small>items for human review</small></article>
@@ -598,12 +675,28 @@ function OverviewTab({
       <div className="overview-grid">
         <section className="panel-card">
           <div className="panel-card-head"><h3>Review path</h3><span>Current snapshot</span></div>
-          <div className="progress-steps">
-            <button type="button" onClick={() => setTab("documents")} className={caseData.documents.length ? "complete" : "current"}><span>{caseData.documents.length ? <Check size={14} /> : "1"}</span><div><strong>Documents</strong><small>{caseData.documents.length} validated records</small></div></button>
-            <button type="button" onClick={() => setTab("facts")} className={caseData.facts.length && reviewedFacts === caseData.facts.length ? "complete" : "current"}><span>{caseData.facts.length && reviewedFacts === caseData.facts.length ? <Check size={14} /> : "2"}</span><div><strong>Fact review</strong><small>{reviewedFacts} reviewed values</small></div></button>
-            <button type="button" onClick={() => setTab("findings")} className={caseData.findings.length ? "complete" : "current"}><span>{caseData.findings.length ? <Check size={14} /> : "3"}</span><div><strong>Evidence comparison</strong><small>{caseData.findings.length ? "Four modules complete" : "Ready when facts are reviewed"}</small></div></button>
-            <button type="button" onClick={() => setTab("report")} className={caseData.lastReport ? "complete" : "current"}><span>{caseData.lastReport ? <Check size={14} /> : "4"}</span><div><strong>Report</strong><small>{caseData.lastReport ? "Download available" : "Nothing leaves until selected"}</small></div></button>
-          </div>
+          <ol className="progress-steps" aria-label="Review progress">
+            {reviewSteps.map((step, index) => {
+              const current = index === currentStepIndex;
+              const status = step.complete ? "Complete" : current ? "Current step" : "Not started";
+              return (
+                <li key={step.id} className={step.complete ? "complete" : current ? "current" : "pending"}>
+                  <button
+                    type="button"
+                    onClick={() => setTab(step.id)}
+                    aria-current={current ? "step" : undefined}
+                    aria-label={`${step.label}: ${status}. ${step.detail}`}
+                  >
+                    <span aria-hidden="true">{step.complete ? <Check size={14} /> : index + 1}</span>
+                    <div>
+                      <strong>{step.label}</strong>
+                      <small><span className="sr-only">{status}. </span>{step.detail}</small>
+                    </div>
+                  </button>
+                </li>
+              );
+            })}
+          </ol>
         </section>
 
         <section className="panel-card">
@@ -640,6 +733,7 @@ function DocumentsTab({
   const [type, setType] = useState<DocumentType>("LCA_CERTIFIED");
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [deletingDocument, setDeletingDocument] = useState("");
 
   async function upload(event: FormEvent) {
     event.preventDefault();
@@ -661,17 +755,36 @@ function DocumentsTab({
       const payload = await parseApi<{ case: CasePayload }>(response);
       setCaseData(payload.case);
       setFile(null);
-      setToast(
-        payload.case.findings?.length
-          ? "File stored. Comparison results were generated from values read in this document set."
-          : "File stored. Values were read from the document text and attached to this review.",
-      );
+      setToast("File stored. Review every proposed value before running comparisons.");
       const input = document.getElementById("document-file") as HTMLInputElement | null;
       if (input) input.value = "";
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Document could not be uploaded");
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function deleteDocument(documentId: string, documentName: string) {
+    if (writesAreLocked) {
+      setError("Wait for the current case operation to finish before deleting a document.");
+      return;
+    }
+    if (!window.confirm(`Delete “${documentName}” and every fact linked only to it? Existing findings and reports will become superseded.`)) return;
+    setDeletingDocument(documentId);
+    setError("");
+    try {
+      const response = await apiFetch(
+        `/api/v1/cases/${caseData.id}/documents/${encodeURIComponent(documentId)}`,
+        { method: "DELETE" },
+      );
+      const payload = await parseApi<{ case: CasePayload }>(response);
+      setCaseData(payload.case);
+      setToast("Document and its dependent evidence were deleted. Rerun comparisons after completing fact review.");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Document could not be deleted");
+    } finally {
+      setDeletingDocument("");
     }
   }
 
@@ -710,7 +823,7 @@ function DocumentsTab({
 
       <form className="upload-panel" onSubmit={upload}>
         <div className="upload-icon"><UploadCloud size={23} /></div>
-        <div className="upload-copy"><strong>Add an employment record</strong><p>PDF, PNG, or JPEG · 12 MB maximum · encrypted or active PDFs are rejected. Findings use values read from these files.</p></div>
+        <div className="upload-copy"><strong>Add an employment record</strong><p>PDF, PNG, or JPEG · {formatFileSize(UPLOAD_POLICY.maximumFileBytes)} maximum · encrypted or active PDFs are rejected. Findings use only values you review.</p></div>
         <label className="upload-type"><span className="sr-only">Document type</span><select value={type} onChange={(event) => setType(event.target.value as DocumentType)}>{Object.entries(DOCUMENT_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         <label className="file-picker"><input id="document-file" type="file" accept="application/pdf,image/png,image/jpeg" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><span>{file ? file.name : "Choose file"}</span></label>
         <button className="button button-primary" type="submit" disabled={uploading || writesAreLocked}>{uploading ? <LoaderCircle className="spin" size={15} /> : <UploadCloud size={15} />}{uploading ? "Validating…" : "Upload"}</button>
@@ -721,15 +834,64 @@ function DocumentsTab({
         <div className="panel-card-head"><h3>Case inventory</h3><span>{caseData.documents.length} documents</span></div>
         {caseData.documents.length ? (
           <div className="document-table">
-            {caseData.documents.map((document) => (
-              <div className="document-row" key={document.id}>
-                <span className="document-file-icon"><FileCheck2 size={18} /></span>
-                <div className="document-name"><strong>{document.name}</strong><small>{DOCUMENT_LABELS[document.type]} · {document.pages} page{document.pages === 1 ? "" : "s"}</small></div>
-                <span className="document-hash">SHA-256 {document.hash.slice(0, 10)}…</span>
-                <span className="document-ready"><CheckCircle2 size={13} /> Ready</span>
-                <a className="icon-button" href={`/api/v1/cases/${caseData.id}/documents/${document.id}`} target="_blank" rel="noreferrer" aria-label={`Open ${document.name}`}><Eye size={15} /></a>
-              </div>
-            ))}
+            {caseData.documents.map((document) => {
+              const status = DOCUMENT_STATUS_META[document.status];
+              const extractionCount = document.extraction
+                ? document.extraction.proposedFactCount +
+                  document.extraction.proposedPayPeriodCount +
+                  document.extraction.proposedDeductionCount
+                : 0;
+              return (
+                <article className="document-entry" key={document.id}>
+                  <div className="document-row">
+                    <span className="document-file-icon">
+                      {document.status === "PROCESSING" ? <LoaderCircle className="spin" size={18} /> : <FileCheck2 size={18} />}
+                    </span>
+                    <div className="document-name">
+                      <strong>{document.name}</strong>
+                      <small>
+                        {DOCUMENT_LABELS[document.type]} · {document.pages} page{document.pages === 1 ? "" : "s"} · {formatFileSize(document.bytes)}
+                        {caseData.mode === "SANDBOX" && document.synthetic ? " · fictional fixture" : ""}
+                      </small>
+                    </div>
+                    <span className="document-hash">SHA-256 {document.hash.slice(0, 10)}…</span>
+                    <span className={`document-status ${status.className}`}>
+                      {document.status === "READY" ? <CheckCircle2 size={13} /> : document.status === "PROCESSING" ? <LoaderCircle className="spin" size={13} /> : <AlertCircle size={13} />}
+                      {status.label}
+                    </span>
+                    <div className="document-actions">
+                      <a className="icon-button" href={`/api/v1/cases/${caseData.id}/documents/${document.id}`} target="_blank" rel="noreferrer" aria-label={`Open ${document.name}`}><Eye size={15} /></a>
+                      <button
+                        type="button"
+                        className="icon-button icon-button-danger"
+                        onClick={() => deleteDocument(document.id, document.name)}
+                        disabled={writesAreLocked || deletingDocument === document.id}
+                        aria-label={`Delete ${document.name}`}
+                      >
+                        {deletingDocument === document.id ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}
+                      </button>
+                    </div>
+                  </div>
+                  {(document.extraction || document.note) && (
+                    <div className="document-extraction">
+                      <div>
+                        <strong>{document.extraction?.method === "PDF_TEXT_LAYER" ? "Text-layer extraction" : "Manual image review required"}</strong>
+                        {document.extraction ? (
+                          <span>
+                            {document.extraction.characterCount.toLocaleString()} characters read · {extractionCount} proposal{extractionCount === 1 ? "" : "s"} created
+                          </span>
+                        ) : document.note ? <span>{document.note}</span> : null}
+                      </div>
+                      {document.extraction?.warnings.length ? (
+                        <ul aria-label={`Extraction warnings for ${document.name}`}>
+                          {document.extraction.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+                        </ul>
+                      ) : null}
+                    </div>
+                  )}
+                </article>
+              );
+            })}
           </div>
         ) : <div className="compact-empty"><Files size={20} /><p>No documents yet. Add the LCA first.</p></div>}
       </section>
@@ -776,9 +938,16 @@ function FactProposalCard({
   onCorrect: (rawValue: string, normalizedValue: string) => void;
   onReject: () => void;
 }) {
+  const isCurrency = fact.type.endsWith("_CENTS");
   const [editing, setEditing] = useState(false);
   const [raw, setRaw] = useState(fact.rawValue);
-  const [normalized, setNormalized] = useState(fact.normalizedValue);
+  const [normalized, setNormalized] = useState(
+    isCurrency && /^\d+$/.test(fact.normalizedValue)
+      ? centsToInput(Number(fact.normalizedValue))
+      : fact.normalizedValue,
+  );
+  const correctedNormalized = isCurrency ? dollarsToCentsInput(normalized) : normalized.trim();
+  const normalizedIsValid = isCurrency ? correctedNormalized !== null : Boolean(correctedNormalized);
   return (
     <article className="proposal-card">
       <div className="proposal-card-head">
@@ -790,16 +959,16 @@ function FactProposalCard({
       {editing ? (
         <div className="proposal-edit">
           <label className="field-label">Displayed value<input value={raw} onChange={(event) => setRaw(event.target.value)} /></label>
-          <label className="field-label">Normalized rule input<input value={normalized} onChange={(event) => setNormalized(event.target.value)} /></label>
+          <label className="field-label">{isCurrency ? "Reviewed amount (dollars)" : "Normalized rule input"}<input value={normalized} inputMode={isCurrency ? "decimal" : undefined} onChange={(event) => setNormalized(event.target.value)} />{isCurrency && !normalizedIsValid && <small>Enter dollars with no more than two decimal places.</small>}</label>
           <div className="proposal-actions">
-            <button type="button" className="button button-primary button-small" disabled={disabled} onClick={() => onCorrect(raw, normalized)}><Save size={13} /> Save</button>
+            <button type="button" className="button button-primary button-small" disabled={disabled || !normalizedIsValid} onClick={() => onCorrect(raw, String(correctedNormalized))}><Save size={13} /> Save</button>
             <button type="button" className="button button-ghost button-small" onClick={() => setEditing(false)}>Cancel</button>
           </div>
         </div>
       ) : (
         <div className="proposal-actions">
           <button type="button" className="button button-primary button-small" disabled={disabled} onClick={onConfirm}><Check size={13} /> Confirm</button>
-          <button type="button" className="button button-secondary button-small" disabled={disabled} onClick={() => { setRaw(fact.rawValue); setNormalized(fact.normalizedValue); setEditing(true); }}><Pencil size={13} /> Correct</button>
+          <button type="button" className="button button-secondary button-small" disabled={disabled} onClick={() => { setRaw(fact.rawValue); setNormalized(isCurrency && /^\d+$/.test(fact.normalizedValue) ? centsToInput(Number(fact.normalizedValue)) : fact.normalizedValue); setEditing(true); }}><Pencil size={13} /> Correct</button>
           <button type="button" className="button button-ghost button-small" disabled={disabled} onClick={onReject}><X size={13} /> Reject</button>
         </div>
       )}
@@ -991,6 +1160,7 @@ function FactsTab({
   const [rawValue, setRawValue] = useState("");
   const [normalizedValue, setNormalizedValue] = useState("");
   const [saving, setSaving] = useState(false);
+  const [deletingFact, setDeletingFact] = useState("");
   const [pendingBusy, setPendingBusy] = useState("");
   const selected = caseData.facts.find((fact) => fact.id === selectedFactId) ?? caseData.facts[0];
 
@@ -1029,7 +1199,11 @@ function FactsTab({
   function edit(fact: FactRecord) {
     setEditing(fact.id);
     setRawValue(fact.rawValue);
-    setNormalizedValue(fact.normalizedValue);
+    setNormalizedValue(
+      fact.type.endsWith("_CENTS") && /^\d+$/.test(fact.normalizedValue)
+        ? centsToInput(Number(fact.normalizedValue))
+        : fact.normalizedValue,
+    );
   }
 
   async function saveCorrection(fact: FactRecord) {
@@ -1037,12 +1211,24 @@ function FactsTab({
       setError("Wait for the current case operation to finish before saving corrections.");
       return;
     }
+    const normalizedForApi = fact.type.endsWith("_CENTS")
+      ? dollarsToCentsInput(normalizedValue)
+      : normalizedValue.trim();
+    if (normalizedForApi === null || normalizedForApi === "") {
+      setError(
+        fact.type.endsWith("_CENTS")
+          ? "Enter the reviewed dollar amount with no more than two decimal places."
+          : "Enter a normalized value for the rule input.",
+      );
+      return;
+    }
     setSaving(true);
+    setError("");
     try {
       const response = await apiFetch(`/api/v1/cases/${caseData.id}/facts/${fact.id}/corrections`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "correct", raw_value: rawValue, normalized_value: normalizedValue }),
+        body: JSON.stringify({ action: "correct", raw_value: rawValue, normalized_value: String(normalizedForApi) }),
       });
       const payload = await parseApi<{ case: CasePayload }>(response);
       setCaseData(payload.case);
@@ -1052,6 +1238,33 @@ function FactsTab({
       setError(caught instanceof Error ? caught.message : "Correction could not be saved");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function deleteUserFact(fact: FactRecord) {
+    if (fact.origin !== "USER_ENTERED") return;
+    if (writesAreLocked) {
+      setError("Wait for the current case operation to finish before removing a transcribed fact.");
+      return;
+    }
+    if (!window.confirm(`Remove “${fact.label}” from this review? Current findings and reports will need to be regenerated.`)) return;
+    setDeletingFact(fact.id);
+    setError("");
+    try {
+      const response = await apiFetch(factUrl(fact.id), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete" }),
+      });
+      const payload = await parseApi<{ case: CasePayload }>(response);
+      setCaseData(payload.case);
+      setSelectedFactId(payload.case.facts[0]?.id ?? "");
+      setEditing("");
+      setToast("User-transcribed fact removed. Review the remaining evidence before rerunning comparisons.");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "The transcribed fact could not be removed");
+    } finally {
+      setDeletingFact("");
     }
   }
 
@@ -1104,9 +1317,9 @@ function FactsTab({
       )}
       {caseData.facts.length ? (
         <div className="fact-review-layout">
-          <div className="fact-list" role="list">
+          <div className="fact-list">
             {caseData.facts.map((fact) => (
-              <button key={fact.id} type="button" className={selected?.id === fact.id ? "active" : ""} onClick={() => setSelectedFactId(fact.id)}>
+              <button key={fact.id} type="button" className={selected?.id === fact.id ? "active" : ""} onClick={() => setSelectedFactId(fact.id)} aria-pressed={selected?.id === fact.id}>
                 <span className={`fact-state ${fact.reviewStatus === "NEEDS_REVIEW" ? "needs" : "accepted"}`}>{fact.reviewStatus === "NEEDS_REVIEW" ? <AlertCircle size={13} /> : <Check size={13} />}</span>
                 <span><strong>{fact.label}</strong><small>{fact.rawValue || "Value not entered"}</small></span>
                 <em>{Math.round(fact.confidence * 100)}%</em>
@@ -1115,23 +1328,34 @@ function FactsTab({
           </div>
           {selected && (
             <div className="evidence-viewer">
-              <div className="evidence-document-bar"><FileSearch size={15} /><span>{selected.evidence.documentName}</span><small>Page {selected.evidence.page}</small></div>
+              <div className="evidence-document-bar">
+                <FileSearch size={15} />
+                <span>{selected.evidence.documentName}</span>
+                <small>Page {selected.evidence.page}</small>
+                {caseData.documents.some((document) => document.id === selected.evidence.documentId) && (
+                  <a href={`/api/v1/cases/${caseData.id}/documents/${selected.evidence.documentId}`} target="_blank" rel="noreferrer">
+                    Open record <ExternalLink size={11} />
+                  </a>
+                )}
+              </div>
               <div className="document-page-mock">
-                <div className="document-watermark">FICTIONAL SYNTHETIC DATA</div>
+                <div className={`document-watermark ${caseData.mode === "SANDBOX" ? "sandbox" : "standard"}`}>
+                  {caseData.mode === "SANDBOX" ? "FICTIONAL SANDBOX EVIDENCE" : "TEXT-LAYER EVIDENCE PREVIEW"}
+                </div>
                 <span className="doc-line short" /><span className="doc-line" /><span className="doc-line medium" />
                 <div className="evidence-highlight"><small>{selected.evidence.label}</small><strong>{selected.evidence.text}</strong></div>
                 <span className="doc-line" /><span className="doc-line medium" /><span className="doc-line short" />
               </div>
               <div className="fact-detail-panel">
-                <div className="fact-detail-head"><div><span className="eyebrow">Normalized fact</span><h3>{selected.label}</h3></div><button type="button" className="button button-secondary button-small" onClick={() => edit(selected)} disabled={writesAreLocked}><Pencil size={13} /> Correct</button></div>
+                <div className="fact-detail-head"><div><span className="eyebrow">Normalized fact</span><h3>{selected.label}</h3></div><div className="fact-detail-actions"><button type="button" className="button button-secondary button-small" onClick={() => edit(selected)} disabled={saving || Boolean(deletingFact) || writesAreLocked}><Pencil size={13} /> Correct</button>{selected.origin === "USER_ENTERED" && <button type="button" className="button button-danger button-small" onClick={() => deleteUserFact(selected)} disabled={saving || Boolean(deletingFact) || writesAreLocked}>{deletingFact === selected.id ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />}{deletingFact === selected.id ? "Removing…" : "Remove"}</button>}</div></div>
                 {editing === selected.id ? (
                   <div className="fact-edit-form">
                     <label className="field-label">Displayed value<input value={rawValue} onChange={(event) => setRawValue(event.target.value)} /></label>
-                    <label className="field-label">Normalized rule input<input value={normalizedValue} onChange={(event) => setNormalizedValue(event.target.value)} /></label>
+                    <label className="field-label">{selected.type.endsWith("_CENTS") ? "Reviewed amount (dollars)" : "Normalized rule input"}<input value={normalizedValue} inputMode={selected.type.endsWith("_CENTS") ? "decimal" : undefined} onChange={(event) => setNormalizedValue(event.target.value)} /></label>
                     <div><button type="button" className="button button-primary button-small" onClick={() => saveCorrection(selected)} disabled={saving || writesAreLocked}>{saving ? <LoaderCircle className="spin" size={13} /> : <Save size={13} />} Save correction</button><button type="button" className="button button-ghost button-small" onClick={() => setEditing("")}>Cancel</button></div>
                   </div>
                 ) : (
-                  <dl className="detail-list compact"><div><dt>Reviewed value</dt><dd>{selected.rawValue}</dd></div><div><dt>Normalized input</dt><dd>{selected.normalizedValue}</dd></div><div><dt>Review status</dt><dd>{selected.reviewStatus.replaceAll("_", " ")}</dd></div><div><dt>Affects</dt><dd>{selected.affects.map(moduleLabel).join(", ")}</dd></div></dl>
+                  <dl className="detail-list compact"><div><dt>Reviewed value</dt><dd>{selected.rawValue}</dd></div><div><dt>Normalized input</dt><dd>{selected.type.endsWith("_CENTS") && /^\d+$/.test(selected.normalizedValue) ? formatCents(Number(selected.normalizedValue)) : selected.normalizedValue}</dd></div><div><dt>Review status</dt><dd>{selected.reviewStatus.replaceAll("_", " ")}</dd></div><div><dt>Affects</dt><dd>{selected.affects.map(moduleLabel).join(", ")}</dd></div></dl>
                 )}
               </div>
             </div>
@@ -1144,9 +1368,99 @@ function FactsTab({
   );
 }
 
+type ManualSourcePrefix = "lca" | "offer" | "pay" | "context";
+
+function ManualSourceFields({
+  prefix,
+  title,
+  description,
+  documents,
+  allowedTypes,
+}: {
+  prefix: ManualSourcePrefix;
+  title: string;
+  description: string;
+  documents: CasePayload["documents"];
+  allowedTypes: DocumentType[];
+}) {
+  const candidates = documents.filter(
+    (document) =>
+      allowedTypes.includes(document.type) &&
+      document.status !== "REJECTED" &&
+      document.status !== "PROCESSING",
+  );
+  return (
+    <section className="manual-source-card" aria-labelledby={`${prefix}-source-title`}>
+      <div>
+        <strong id={`${prefix}-source-title`}>{title}</strong>
+        <small>{description} Required only when you enter values from this record group.</small>
+      </div>
+      {candidates.length ? (
+        <div className="manual-source-grid">
+          <label className="field-label">
+            Source document
+            <select name={`${prefix}_source_document_id`} defaultValue="">
+              <option value="">Choose a document</option>
+              {candidates.map((document) => (
+                <option key={document.id} value={document.id}>
+                  {document.name} · {DOCUMENT_LABELS[document.type]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="field-label">
+            Page
+            <input name={`${prefix}_source_page`} type="number" min="1" step="1" defaultValue="1" inputMode="numeric" />
+          </label>
+          <label className="field-label manual-source-excerpt">
+            Verbatim excerpt
+            <textarea
+              name={`${prefix}_source_excerpt`}
+              maxLength={1200}
+              placeholder="Type the exact words and numbers visible on that page."
+            />
+          </label>
+        </div>
+      ) : (
+        <p>Add a matching document before entering values for this group.</p>
+      )}
+    </section>
+  );
+}
+
 function ManualFactsForm({ caseData, setCaseData, setError, setToast, writesAreLocked }: { caseData: CasePayload; setCaseData: (value: CasePayload) => void; setError: (value: string) => void; setToast: (value: string) => void; writesAreLocked: boolean }) {
   const [open, setOpen] = useState(!caseData.facts.length);
   const [saving, setSaving] = useState(false);
+  const [removingManual, setRemovingManual] = useState("");
+  const hasManualPayPeriod = caseData.payPeriods.some((period) => period.evidence.label === "User-transcribed pay period");
+  const hasManualDeduction = caseData.deductions.some((deduction) => deduction.evidence.label === "User-transcribed deduction");
+  const hasManualNonproductive = caseData.events.some((event) => event.kind === "NONPRODUCTIVE_TIME" && event.evidence.some((item) => item.label === "User-transcribed nonproductive interval"));
+  const hasManualWorksite = caseData.events.some((event) => event.kind === "WORKSITE_CHANGE" && event.evidence.some((item) => item.label === "User-transcribed worksite instruction"));
+
+  async function removeManualRecord(flag: "remove_pay_period" | "remove_deduction" | "remove_nonproductive" | "remove_worksite", label: string) {
+    if (writesAreLocked) {
+      setError("Wait for the current case operation to finish before removing a transcribed record.");
+      return;
+    }
+    if (!window.confirm(`Remove the ${label}? Current findings and reports will need to be regenerated.`)) return;
+    setRemovingManual(flag);
+    setError("");
+    try {
+      const response = await apiFetch(`/api/v1/cases/${caseData.id}/facts/manual`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [flag]: true }),
+      });
+      const payload = await parseApi<{ case: CasePayload }>(response);
+      setCaseData(payload.case);
+      setToast(`${label[0].toUpperCase()}${label.slice(1)} removed. Review the remaining evidence before rerunning comparisons.`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "The transcribed record could not be removed");
+    } finally {
+      setRemovingManual("");
+    }
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (writesAreLocked) {
@@ -1158,16 +1472,34 @@ function ManualFactsForm({ caseData, setCaseData, setError, setToast, writesAreL
     try {
       const form = new FormData(event.currentTarget);
       const checkbox = (name: string) => form.get(name) === "on";
+      const source = (prefix: ManualSourcePrefix) => {
+        const documentId = String(form.get(`${prefix}_source_document_id`) ?? "").trim();
+        const excerpt = String(form.get(`${prefix}_source_excerpt`) ?? "").trim();
+        if (!documentId && !excerpt) return undefined;
+        return {
+          document_id: documentId,
+          page: String(form.get(`${prefix}_source_page`) ?? "1"),
+          excerpt,
+        };
+      };
       const body = Object.fromEntries(form.entries());
       Object.assign(body, {
         employer_related_reason: checkbox("employer_related_reason"),
         worker_available: checkbox("worker_available"),
         employment_active: checkbox("employment_active"),
+        lca_source: source("lca"),
+        offer_source: source("offer"),
+        pay_source: source("pay"),
+        context_source: source("context"),
       });
       const response = await apiFetch(`/api/v1/cases/${caseData.id}/facts/manual`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const payload = await parseApi<{ case: CasePayload }>(response);
       setCaseData(payload.case);
-      setToast("Reviewed structured facts saved. The case is ready for deterministic analysis.");
+      setToast(
+        payload.case.state === "READY_FOR_ANALYSIS"
+          ? "Saved only the values and source excerpts you entered. This review is ready to compare."
+          : "Saved only the values and source excerpts you entered. Review any remaining proposals before comparing.",
+      );
       setOpen(false);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Reviewed facts could not be saved");
@@ -1180,10 +1512,20 @@ function ManualFactsForm({ caseData, setCaseData, setError, setToast, writesAreL
       <button type="button" className="manual-facts-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}><span><SlidersHorizontal size={17} /><span><strong>Correct a value from a file</strong><small>Use this only when the PDF text layer missed or misread a number.</small></span></span><ChevronDown size={17} /></button>
       {open && (
         <form className="manual-facts-form" onSubmit={submit}>
-          <fieldset><legend>Employment and wage</legend><div className="form-grid three"><label className="field-label">Worker name<input name="worker_name" defaultValue={caseData.workerName} /></label><label className="field-label">Employer name<input name="employer_name" defaultValue={caseData.employerName} /></label><label className="field-label">Position<input name="position" defaultValue={caseData.position} /></label></div><div className="form-grid three"><label className="field-label">LCA annual wage ($)<input name="lca_annual_dollars" inputMode="decimal" placeholder="Amount from the LCA" /></label><label className="field-label">Offer annual wage ($)<input name="offer_annual_dollars" inputMode="decimal" placeholder="Amount from the LCA" /></label><label className="field-label">Observed biweekly base ($)<input name="observed_biweekly_dollars" inputMode="decimal" placeholder="Ordinary base on the stub" /></label></div><div className="form-grid three"><label className="field-label">Period start<input type="date" name="pay_period_start" /></label><label className="field-label">Period end<input type="date" name="pay_period_end" /></label><label className="field-label">Pay date<input type="date" name="pay_date" /></label></div></fieldset>
-          <fieldset><legend>Location and deduction</legend><div className="form-grid three"><label className="field-label">LCA worksite<input name="lca_worksite" placeholder="City and state from the LCA" /></label><label className="field-label">Offer worksite<input name="offer_worksite" placeholder="City and state from the LCA" /></label><label className="field-label">Current instruction<input name="current_worksite" placeholder="Location named in a work message" /></label></div><div className="form-grid three"><label className="field-label">Worksite qualifier<select name="worksite_qualifier" defaultValue="UNKNOWN"><option value="UNKNOWN">Duration unknown</option><option value="ONGOING">Ongoing</option><option value="TEMPORARY">Temporary travel</option><option value="REMOTE">Remote</option></select></label><label className="field-label">Deduction description<input name="deduction_description" placeholder="Line label from payroll" /></label><label className="field-label">Deduction amount ($)<input name="deduction_dollars" inputMode="decimal" placeholder="Amount from payroll" /></label></div><div className="form-grid three"><label className="field-label">Deduction date<input type="date" name="deduction_date" /></label></div></fieldset>
-          <fieldset><legend>Possible nonproductive interval</legend><div className="form-grid three"><label className="field-label">Start<input type="date" name="nonproductive_start" /></label><label className="field-label">End (exclusive)<input type="date" name="nonproductive_end" /></label><label className="field-label">Observed base pay ($)<input name="nonproductive_observed_dollars" inputMode="decimal" placeholder="0.00" /></label></div><div className="inline-checks"><label className="check-row"><input type="checkbox" name="employer_related_reason" /><span>Employer/client-related reason is supported</span></label><label className="check-row"><input type="checkbox" name="worker_available" /><span>Worker availability is supported</span></label><label className="check-row"><input type="checkbox" name="employment_active" /><span>Employment was active</span></label></div></fieldset>
-          <div className="form-actions"><button type="submit" className="button button-primary" disabled={saving || writesAreLocked}>{saving ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />} Save reviewed facts</button><small>This fallback does not guess values from unreadable records.</small></div>
+          <fieldset><legend>Employment and wage</legend>{hasManualPayPeriod && <div className="manual-record-actions"><span>A user-transcribed pay period is active.</span><button type="button" className="manual-remove-button" onClick={() => removeManualRecord("remove_pay_period", "user-transcribed pay period")} disabled={saving || Boolean(removingManual) || writesAreLocked}>{removingManual === "remove_pay_period" ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />} Remove pay period</button></div>}<div className="form-grid three"><label className="field-label">Worker name<input name="worker_name" defaultValue={caseData.workerName} /></label><label className="field-label">Employer name<input name="employer_name" defaultValue={caseData.employerName} /></label><label className="field-label">Position<input name="position" defaultValue={caseData.position} /></label></div><div className="form-grid three"><label className="field-label">LCA annual wage ($)<input name="lca_annual_dollars" inputMode="decimal" placeholder="Amount from the LCA" /></label><label className="field-label">Offer annual wage ($)<input name="offer_annual_dollars" inputMode="decimal" placeholder="Amount from the offer" /></label><label className="field-label">Observed ordinary base ($)<input name="observed_biweekly_dollars" inputMode="decimal" placeholder="Ordinary base on the stub" /></label></div><div className="form-grid three"><label className="field-label">Pay frequency<select name="pay_frequency" defaultValue=""><option value="">Leave unchanged</option><option value="WEEKLY">Weekly</option><option value="BIWEEKLY">Every two weeks</option><option value="SEMI-MONTHLY">Twice monthly</option><option value="MONTHLY">Monthly</option></select></label><label className="field-label">Period start<input type="date" name="pay_period_start" /></label><label className="field-label">Period end<input type="date" name="pay_period_end" /></label><label className="field-label">Pay date<input type="date" name="pay_date" /></label></div></fieldset>
+          <fieldset><legend>Location and deduction</legend>{(hasManualWorksite || hasManualDeduction) && <div className="manual-record-actions"><span>User-transcribed location or deduction records are active.</span><div>{hasManualWorksite && <button type="button" className="manual-remove-button" onClick={() => removeManualRecord("remove_worksite", "user-transcribed worksite instruction")} disabled={saving || Boolean(removingManual) || writesAreLocked}>{removingManual === "remove_worksite" ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />} Remove worksite</button>}{hasManualDeduction && <button type="button" className="manual-remove-button" onClick={() => removeManualRecord("remove_deduction", "user-transcribed deduction")} disabled={saving || Boolean(removingManual) || writesAreLocked}>{removingManual === "remove_deduction" ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />} Remove deduction</button>}</div></div>}<div className="form-grid three"><label className="field-label">LCA worksite<input name="lca_worksite" placeholder="City and state from the LCA" /></label><label className="field-label">Offer worksite<input name="offer_worksite" placeholder="City and state from the offer letter" /></label><label className="field-label">Current instruction<input name="current_worksite" placeholder="Location named in a work message" /></label></div><div className="form-grid three"><label className="field-label">Worksite qualifier<select name="worksite_qualifier" defaultValue="UNKNOWN"><option value="UNKNOWN">Duration unknown</option><option value="ONGOING">Ongoing</option><option value="TEMPORARY">Temporary travel</option><option value="REMOTE">Remote</option></select></label><label className="field-label">Deduction description<input name="deduction_description" placeholder="Line label from payroll" /></label><label className="field-label">Deduction amount ($)<input name="deduction_dollars" inputMode="decimal" placeholder="Amount from payroll" /></label></div><div className="form-grid three"><label className="field-label">Deduction date<input type="date" name="deduction_date" /></label></div></fieldset>
+          <fieldset><legend>Possible nonproductive interval</legend>{hasManualNonproductive && <div className="manual-record-actions"><span>A user-transcribed nonproductive interval is active.</span><button type="button" className="manual-remove-button" onClick={() => removeManualRecord("remove_nonproductive", "user-transcribed nonproductive interval")} disabled={saving || Boolean(removingManual) || writesAreLocked}>{removingManual === "remove_nonproductive" ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />} Remove interval</button></div>}<div className="form-grid three"><label className="field-label">Start<input type="date" name="nonproductive_start" /></label><label className="field-label">End (exclusive)<input type="date" name="nonproductive_end" /></label><label className="field-label">Observed base pay ($)<input name="nonproductive_observed_dollars" inputMode="decimal" placeholder="0.00" /></label></div><div className="inline-checks"><label className="check-row"><input type="checkbox" name="employer_related_reason" /><span>Employer/client-related reason is supported</span></label><label className="check-row"><input type="checkbox" name="worker_available" /><span>Worker availability is supported</span></label><label className="check-row"><input type="checkbox" name="employment_active" /><span>Employment was active</span></label></div></fieldset>
+          <fieldset className="manual-sources-fieldset">
+            <legend>Source passages</legend>
+            <p className="manual-source-intro">Every structured value must point to a document already in this review, the page where it appears, and the exact excerpt you read. WageShield stores your excerpt as entered; it does not invent source text.</p>
+            <div className="manual-source-list">
+              <ManualSourceFields prefix="lca" title="LCA values" description="Supports the LCA wage or LCA worksite." documents={caseData.documents} allowedTypes={["LCA_CERTIFIED"]} />
+              <ManualSourceFields prefix="offer" title="Offer values" description="Supports the offered wage or offered worksite." documents={caseData.documents} allowedTypes={["OFFER_OR_EMPLOYMENT_LETTER"]} />
+              <ManualSourceFields prefix="pay" title="Pay values" description="Supports pay frequency, a pay period, or a deduction." documents={caseData.documents} allowedTypes={["PAYSTUB"]} />
+              <ManualSourceFields prefix="context" title="Work context" description="Supports a worksite instruction or nonproductive interval." documents={caseData.documents} allowedTypes={["WORK_MESSAGE", "TIMESHEET", "PAYSTUB", "OFFER_OR_EMPLOYMENT_LETTER", "LEAVE_NOTICE", "TERMINATION_NOTICE", "OTHER"]} />
+            </div>
+          </fieldset>
+          <div className="form-actions"><button type="submit" className="button button-primary" disabled={saving || Boolean(removingManual) || writesAreLocked}>{saving ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />} Save reviewed facts</button><small>This fallback does not guess values from unreadable records.</small></div>
         </form>
       )}
     </section>
@@ -1195,14 +1537,16 @@ function TimelineTab({ caseData }: { caseData: CasePayload }) {
     const rows = [
       { id: "employment-start", date: caseData.reviewStart, end: undefined, title: "Review period begins", kind: "Employment", certainty: "CONFIRMED", detail: `${caseData.position || "Employment"} at ${caseData.employerName || "reviewed employer"}` },
       ...caseData.payPeriods.map((period) => ({ id: period.id, date: period.start, end: period.end, title: `Pay period · ${formatCents(period.ordinaryBaseCents)} ordinary base`, kind: "Pay record", certainty: period.complete ? "CONFIRMED" : "APPROXIMATE", detail: period.comparable ? `Complete period paid ${friendlyDate(period.payDate)}` : "Excluded from clean wage aggregation" })),
-      ...caseData.events.map((event) => ({ id: event.id, date: event.start, end: event.end, title: event.title, kind: event.kind === "NONPRODUCTIVE_TIME" ? "No-work event" : event.kind === "WORKSITE_CHANGE" ? "Worksite" : "Employment", certainty: event.certainty, detail: event.worksite ? `${event.worksite} · ${(event.qualifier ?? "unknown").toLowerCase()} context` : event.attribution ? `${event.attribution.toLowerCase()} attribution · ${event.workerAvailable === true ? "availability supported" : "availability unresolved"}` : "Reviewed event" })),
+      ...caseData.events
+        .filter((event) => event.kind !== "PAY_PERIOD")
+        .map((event) => ({ id: event.id, date: event.start, end: event.end, title: event.title, kind: event.kind === "NONPRODUCTIVE_TIME" ? "No-work event" : event.kind === "WORKSITE_CHANGE" ? "Worksite" : "Employment", certainty: event.certainty, detail: event.worksite ? `${event.worksite} · ${(event.qualifier ?? "unknown").toLowerCase()} context` : event.attribution ? `${event.attribution.toLowerCase()} attribution · ${event.workerAvailable === true ? "availability supported" : "availability unresolved"}` : "Reviewed event" })),
     ];
     return rows.sort((a, b) => a.date.localeCompare(b.date));
   }, [caseData]);
   return (
     <>
       <SectionTitle eyebrow="Normalized timeline" title="Pay periods and employment events in one sequence" text="Date intervals are compared as half-open ranges. Dashed markers keep uncertain timing visible rather than filling gaps by guesswork." />
-      <div className="timeline-summary"><CalendarDays size={17} /><span><strong>{friendlyDate(caseData.reviewStart)} – {friendlyDate(caseData.reviewEnd)}</strong><small>{caseData.payPeriods.length} pay periods · {caseData.events.length} employment events</small></span></div>
+      <div className="timeline-summary"><CalendarDays size={17} /><span><strong>{friendlyDate(caseData.reviewStart)} – {friendlyDate(caseData.reviewEnd)}</strong><small>{caseData.payPeriods.length} pay periods · {caseData.events.filter((event) => event.kind !== "PAY_PERIOD").length} other employment events</small></span></div>
       <ol className="case-timeline">
         {items.map((item) => (
           <li key={item.id} className={item.certainty === "CONFIRMED" ? "confirmed" : "uncertain"}>
@@ -1236,8 +1580,22 @@ function FindingsTab({ caseData, filter, setFilter, patchFinding, analyze, busy,
       {!analysisReady && analysisMessage && (
         <div className="readiness-note" role="status"><Info size={15} aria-hidden="true" /><span>{analysisMessage} These results may be stale until you rerun.</span></div>
       )}
-      <div className="finding-filter" role="group" aria-label="Filter findings"><button type="button" className={filter === "ALL" ? "active" : ""} onClick={() => setFilter("ALL")}>All <span>{caseData.findings.length}</span></button>{(["POSSIBLE_DISCREPANCY", "HUMAN_REVIEW_REQUIRED", "INSUFFICIENT_EVIDENCE", "NO_MISMATCH_DETECTED"] as FindingStatus[]).map((status) => { const count = caseData.findings.filter((finding) => finding.status === status).length; return count ? <button key={status} type="button" className={filter === status ? "active" : ""} onClick={() => setFilter(status)}>{STATUS_META[status].short} <span>{count}</span></button> : null; })}</div>
-      <div className="finding-list">{visible.map((finding) => <FindingCard key={finding.id} finding={finding} caseData={caseData} updating={busy === `finding-${finding.id}` || writesAreLocked} patchFinding={patchFinding} />)}</div>
+      <div className="finding-filter" role="group" aria-label="Filter findings">
+        <button type="button" className={filter === "ALL" ? "active" : ""} aria-pressed={filter === "ALL"} onClick={() => setFilter("ALL")}>All <span>{caseData.findings.length}</span></button>
+        {FINDING_STATUS_ORDER.map((status) => {
+          const count = caseData.findings.filter((finding) => finding.status === status).length;
+          return (
+            <button key={status} type="button" className={filter === status ? "active" : ""} aria-pressed={filter === status} onClick={() => setFilter(status)}>
+              {STATUS_META[status].short} <span>{count}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div className="finding-list">
+        {visible.length ? visible.map((finding) => <FindingCard key={finding.id} finding={finding} caseData={caseData} updating={busy === `finding-${finding.id}` || writesAreLocked} patchFinding={patchFinding} />) : (
+          <div className="compact-empty"><SearchCheck size={20} /><p>No findings have this status in the current snapshot.</p></div>
+        )}
+      </div>
       <div className="safety-note"><Info size={17} /><div><strong>These are documentary signals</strong><p>A possible discrepancy is not a finding that a rule was violated. A no-mismatch result covers only the evidence and checks in this snapshot.</p></div></div>
     </>
   );
@@ -1246,16 +1604,17 @@ function FindingsTab({ caseData, filter, setFilter, patchFinding, analyze, busy,
 function FindingCard({ finding, caseData, updating, patchFinding }: { finding: Finding; caseData: CasePayload; updating: boolean; patchFinding: (id: string, patch: { include_in_report?: boolean; disposition?: Finding["disposition"] }) => void }) {
   const meta = MODULE_META[finding.module];
   const status = STATUS_META[finding.status];
+  const attention = ATTENTION_META[finding.attention];
   const Icon = meta.icon;
   return (
     <details className={`finding-card ${status.className}`} open={finding.module === "WAGE_BENCHMARK"}>
       <summary>
         <div className="finding-number"><Icon size={18} /><small>{meta.number}</small></div>
-        <div className="finding-summary-main"><span className={`status-chip ${status.className}`}>{finding.status === "NO_MISMATCH_DETECTED" ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}{status.label}</span><h3>{finding.headline}</h3><p>{finding.summary}</p></div>
+        <div className="finding-summary-main"><div className="finding-chips"><span className={`status-chip ${status.className}`}>{finding.status === "NO_MISMATCH_DETECTED" ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}{status.label}</span><span className={`attention-chip ${attention.className}`}>{attention.label}</span></div><h3>{finding.headline}</h3><p>{finding.summary}</p></div>
         <div className="finding-summary-side">{finding.amountCents !== undefined && <div><small>{finding.amountLabel}</small><strong>{formatCents(finding.amountCents)}</strong></div>}<span className="details-chevron"><ChevronDown size={17} /></span></div>
       </summary>
       <div className="finding-detail">
-        <div className="finding-toolbar"><span><History size={13} /> {finding.ruleVersion}</span><label><input type="checkbox" checked={finding.includeInReport} disabled={updating} onChange={(event) => patchFinding(finding.id, { include_in_report: event.target.checked })} /> Include in report</label></div>
+        <div className="finding-toolbar"><span><History size={13} /> Rule {finding.ruleVersion}{finding.period ? ` · ${friendlyDate(finding.period.start)}–${friendlyDate(finding.period.end)}` : ""}</span><label><input type="checkbox" checked={finding.includeInReport} disabled={updating} onChange={(event) => patchFinding(finding.id, { include_in_report: event.target.checked })} /> Include in report</label></div>
         <div className="finding-detail-grid">
           <section>
             <h4>Why this appeared</h4>
@@ -1263,11 +1622,17 @@ function FindingCard({ finding, caseData, updating, patchFinding }: { finding: F
           </section>
           <section>
             <h4>Confidence, not legal probability</h4>
-            <div className="confidence-list">{Object.entries(finding.confidence).map(([label, value]) => <div key={label}><span>{label}</span><div><i style={{ width: `${value * 100}%` }} /></div><strong>{formatPercent(value)}</strong></div>)}</div>
+            <div className="confidence-list">{Object.entries(finding.confidence).map(([label, value]) => <div key={label}><span>{label}</span><div role="progressbar" aria-label={`${label} confidence`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(value * 100)}><i style={{ width: `${value * 100}%` }} /></div><strong>{formatPercent(value)}</strong></div>)}</div>
           </section>
         </div>
         <section className="finding-evidence"><h4>Case evidence</h4><div>{finding.evidence.length ? finding.evidence.map((item) => <article key={item.id}><span><FileCheck2 size={14} /> {item.role}</span><blockquote>“{item.text}”</blockquote><small>{item.documentName} · page {item.page}</small>{caseData.documents.some((document) => document.id === item.documentId) && <a href={`/api/v1/cases/${caseData.id}/documents/${item.documentId}`} target="_blank" rel="noreferrer">Open record <ExternalLink size={11} /></a>}</article>) : <article><span><Info size={14} /> Missing evidence</span><blockquote>No source span is available for the required fact.</blockquote></article>}</div></section>
-        <section className="source-card"><div className="source-card-icon"><BadgeCheck size={17} /></div><div><span>Official context · separate from case evidence</span><h4>{finding.source.title}</h4><p>{finding.source.paraphrase}</p><small>{finding.source.caveat}</small><a href={finding.source.url} target="_blank" rel="noreferrer">Open official source <ExternalLink size={12} /></a></div></section>
+        <section className="source-card"><div className="source-card-icon"><BadgeCheck size={17} /></div><div><span>Official context · separate from case evidence</span><h4>{finding.source.title}</h4><p>{finding.source.paraphrase}</p><small>{finding.source.caveat}</small><dl className="source-metadata"><div><dt>Authority</dt><dd>{finding.source.authority}</dd></div><div><dt>Section</dt><dd>{finding.source.section}</dd></div><div><dt>Version</dt><dd>{finding.source.version}</dd></div><div><dt>Retrieved</dt><dd>{friendlyDate(finding.source.retrievedAt)}</dd></div><div><dt>Reviewed</dt><dd>{friendlyDate(finding.source.reviewedAt)}</dd></div></dl><a href={finding.source.url} target="_blank" rel="noreferrer">Open official source <ExternalLink size={12} /></a></div></section>
+        {finding.diagnostics.length > 0 && (
+          <section className="finding-diagnostics">
+            <h4>Rule diagnostics</h4>
+            <ul>{finding.diagnostics.map((diagnostic) => <li key={diagnostic}><code>{diagnostic}</code></li>)}</ul>
+          </section>
+        )}
         <div className="finding-bottom-grid"><section><h4>Assumptions & limits</h4><ul>{[...finding.assumptions, ...finding.limitations].map((item) => <li key={item}>{item}</li>)}</ul></section><section><h4>Questions for a human reviewer</h4><ul>{finding.questions.map((item) => <li key={item}>{item}</li>)}</ul></section></div>
         <div className="finding-disposition"><span>How should this appear in your review?</span><div>{(["UNREVIEWED", "EXPLAINED", "IRRELEVANT", "NEEDS_REVIEW"] as Finding["disposition"][]).map((value) => <button key={value} type="button" className={finding.disposition === value ? "active" : ""} disabled={updating} onClick={() => patchFinding(finding.id, { disposition: value })}>{value.replaceAll("_", " ").toLowerCase()}</button>)}</div></div>
       </div>
@@ -1278,10 +1643,18 @@ function FindingCard({ finding, caseData, updating, patchFinding }: { finding: F
 function ReportTab({ caseData, setCaseData, patchFinding, setError, setToast, busy, writesAreLocked }: { caseData: CasePayload; setCaseData: (value: CasePayload) => void; patchFinding: (id: string, patch: { include_in_report?: boolean }) => void; setError: (value: string) => void; setToast: (value: string) => void; busy: string; writesAreLocked: boolean }) {
   const [redactWorker, setRedactWorker] = useState(true);
   const [redactEmployer, setRedactEmployer] = useState(false);
+  const [includeCaseTitle, setIncludeCaseTitle] = useState(false);
+  const [includePosition, setIncludePosition] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [deletingReport, setDeletingReport] = useState("");
   const [report, setReport] = useState<{ id: string; sha256: string; download_url: string; manifest_url: string } | null>(null);
+  const reportKey = useRef("");
   const included = caseData.findings.filter((finding) => finding.includeInReport);
-  const canGenerate = caseData.state === "RESULTS_READY" && Boolean(caseData.findings.length);
+  const canGenerate = ["RESULTS_READY", "REPORT_FAILED"].includes(caseData.state) && Boolean(caseData.findings.length);
+  const isRetry = caseData.state === "REPORT_FAILED";
+  const reportHistory = [...(caseData.reports ?? [])].sort((left, right) =>
+    right.generatedAt.localeCompare(left.generatedAt),
+  );
   async function generate() {
     if (writesAreLocked) { setError("Wait for the current case operation to finish before generating a report."); return; }
     if (!canGenerate) { setError("Run the comparisons on the current reviewed facts before generating a report."); return; }
@@ -1289,8 +1662,10 @@ function ReportTab({ caseData, setCaseData, patchFinding, setError, setToast, bu
     setGenerating(true);
     setError("");
     try {
-      const response = await apiFetch(`/api/v1/cases/${caseData.id}/reports`, { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify({ included_finding_ids: included.map((finding) => finding.id), redact_worker_name: redactWorker, redact_employer_name: redactEmployer }) });
+      reportKey.current ||= crypto.randomUUID();
+      const response = await apiFetch(`/api/v1/cases/${caseData.id}/reports`, { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": reportKey.current }, body: JSON.stringify({ included_finding_ids: included.map((finding) => finding.id), redact_worker_name: redactWorker, redact_employer_name: redactEmployer, include_case_title: includeCaseTitle, include_position: includePosition }) });
       const payload = await parseApi<{ case: CasePayload; report: { id: string; sha256: string; download_url: string; manifest_url: string } }>(response);
+      reportKey.current = "";
       setCaseData(payload.case);
       setReport(payload.report);
       setToast("Report reconstructed from the selected fields and stored privately.");
@@ -1298,9 +1673,34 @@ function ReportTab({ caseData, setCaseData, patchFinding, setError, setToast, bu
       setError(caught instanceof Error ? caught.message : "Report could not be generated");
     } finally { setGenerating(false); }
   }
+  async function removeReport(reportId: string) {
+    if (writesAreLocked) {
+      setError("Wait for the current case operation to finish before deleting a report.");
+      return;
+    }
+    if (!window.confirm("Permanently delete this generated PDF and its manifest?")) return;
+    setDeletingReport(reportId);
+    setError("");
+    try {
+      const response = await apiFetch(`/api/v1/cases/${caseData.id}/reports/${reportId}`, {
+        method: "DELETE",
+      });
+      await parseApi<{ deletion: { status: string; report_id: string } }>(response);
+      const refreshed = await apiFetch(`/api/v1/cases/${caseData.id}`);
+      const refreshedPayload = await parseApi<{ case: CasePayload }>(refreshed);
+      setCaseData(refreshedPayload.case);
+      if (report?.id === reportId) setReport(null);
+      setToast("Generated report deleted. Older reports remain superseded snapshots.");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Report could not be deleted");
+    } finally {
+      setDeletingReport("");
+    }
+  }
   const downloadUrl = report?.download_url ?? (caseData.lastReport ? `/api/v1/cases/${caseData.id}/reports/${caseData.lastReport.id}` : "");
   const manifestUrl = report?.manifest_url ?? (caseData.lastReport ? `/api/v1/cases/${caseData.id}/reports/${caseData.lastReport.id}/manifest` : "");
   const hash = report?.sha256 ?? caseData.lastReport?.sha256;
+  const generatedAt = caseData.lastReport?.generatedAt;
   return (
     <>
       <SectionTitle eyebrow="Report builder" title="Choose exactly what leaves the case" text="The export starts empty and is reconstructed from selected structured fields. Original document layers are never copied into the PDF." />
@@ -1308,16 +1708,42 @@ function ReportTab({ caseData, setCaseData, patchFinding, setError, setToast, bu
         <section className="report-builder panel-card">
           <div className="panel-card-head"><h3>1. Select findings</h3><span>{included.length} included</span></div>
           <div className="report-finding-list">{caseData.findings.length ? caseData.findings.map((finding) => <label key={finding.id}><input type="checkbox" checked={finding.includeInReport} disabled={writesAreLocked || busy === `finding-${finding.id}`} onChange={(event) => patchFinding(finding.id, { include_in_report: event.target.checked })} /><span><strong>{MODULE_META[finding.module].label}</strong><small>{finding.headline}</small></span><em className={STATUS_META[finding.status].className}>{STATUS_META[finding.status].short}</em></label>) : <p className="compact-empty-text">Run the comparisons first, then choose which findings to include.</p>}</div>
-          <div className="panel-card-head report-step"><h3>2. Redact identifiers</h3><span>Exclusion-first</span></div>
+          <div className="panel-card-head report-step"><h3>2. Choose identifiers</h3><span>Private by default</span></div>
           <label className="switch-row"><span><strong>Mask worker name</strong><small>Replace with [REDACTED BY USER]</small></span><input aria-label="Mask worker name" type="checkbox" checked={redactWorker} onChange={(event) => setRedactWorker(event.target.checked)} /></label>
           <label className="switch-row"><span><strong>Mask employer name</strong><small>Useful when sharing a methodology sample</small></span><input aria-label="Mask employer name" type="checkbox" checked={redactEmployer} onChange={(event) => setRedactEmployer(event.target.checked)} /></label>
-          <button type="button" className="button button-primary button-full report-generate" onClick={generate} disabled={generating || !included.length || writesAreLocked || !canGenerate} title={!canGenerate ? "Run the comparisons on the current reviewed facts first." : undefined}>{generating ? <LoaderCircle className="spin" size={16} /> : <FileDown size={16} />}{generating ? "Reconstructing report…" : "Generate evidence report"}</button>
+          <label className="switch-row"><span><strong>Include case title</strong><small>Excluded from the PDF unless you opt in</small></span><input aria-label="Include case title" type="checkbox" checked={includeCaseTitle} onChange={(event) => setIncludeCaseTitle(event.target.checked)} /></label>
+          <label className="switch-row"><span><strong>Include position</strong><small>Excluded and redacted from selected text unless you opt in</small></span><input aria-label="Include position" type="checkbox" checked={includePosition} onChange={(event) => setIncludePosition(event.target.checked)} /></label>
+          <button type="button" className="button button-primary button-full report-generate" onClick={generate} disabled={generating || !included.length || writesAreLocked || !canGenerate} title={!canGenerate ? "Run the comparisons on the current reviewed facts first." : undefined}>{generating ? <LoaderCircle className="spin" size={16} /> : <FileDown size={16} />}{generating ? "Reconstructing report…" : isRetry ? "Retry evidence report" : "Generate evidence report"}</button>
         </section>
         <section className="report-preview">
-          <div className="report-paper"><div className="report-paper-mark"><ShieldCheck size={18} /></div><span>WAGESHIELD H-1B</span><h3>Evidence review packet</h3><p>Not legal advice or a legal determination.</p><dl><div><dt>Worker</dt><dd>{redactWorker ? "[REDACTED BY USER]" : caseData.workerName}</dd></div><div><dt>Employer</dt><dd>{redactEmployer ? "[REDACTED BY USER]" : caseData.employerName}</dd></div><div><dt>Review period</dt><dd>{caseData.reviewStart} – {caseData.reviewEnd}</dd></div><div><dt>Selected findings</dt><dd>{included.length}</dd></div></dl><div className="report-paper-lines"><i /><i /><i /><i /></div><small>ALLOWLISTED STRUCTURED RECONSTRUCTION</small></div>
-          {downloadUrl ? <div className="report-ready"><CheckCircle2 size={18} /><div><strong>Latest report is ready</strong><small>SHA-256 {hash?.slice(0, 20)}…</small></div><a href={downloadUrl} className="button button-primary"><Download size={15} /> Download PDF</a><a href={manifestUrl} target="_blank" rel="noreferrer" className="button button-secondary"><FileSearch size={15} /> Manifest</a></div> : <div className="report-preview-note"><FolderLock size={15} /> The preview uses case data only inside this browser session.</div>}
+          <div className="report-paper"><div className="report-paper-mark"><ShieldCheck size={18} /></div><span>WAGESHIELD H-1B</span><h3>Evidence review packet</h3><p>Not legal advice or a legal determination.</p><dl><div><dt>Worker</dt><dd>{redactWorker ? "[REDACTED BY USER]" : caseData.workerName}</dd></div><div><dt>Employer</dt><dd>{redactEmployer ? "[REDACTED BY USER]" : caseData.employerName}</dd></div><div><dt>Case title</dt><dd>{includeCaseTitle ? caseData.title : "[OMITTED BY USER]"}</dd></div><div><dt>Position</dt><dd>{includePosition ? (caseData.position || "Not provided") : "[OMITTED BY USER]"}</dd></div><div><dt>Review period</dt><dd>{caseData.reviewStart} – {caseData.reviewEnd}</dd></div><div><dt>Selected findings</dt><dd>{included.length}</dd></div></dl><div className="report-paper-lines"><i /><i /><i /><i /></div><small>ALLOWLISTED STRUCTURED RECONSTRUCTION</small></div>
+          {downloadUrl ? <div className="report-ready"><CheckCircle2 size={18} /><div><strong>Latest report is ready</strong><small>SHA-256 {hash?.slice(0, 20)}…{generatedAt ? ` · ${friendlyDateTime(generatedAt)}` : ""}</small></div><a href={downloadUrl} className="button button-primary"><Download size={15} /> Download PDF</a><a href={manifestUrl} target="_blank" rel="noreferrer" className="button button-secondary"><FileSearch size={15} /> Manifest</a></div> : <div className="report-preview-note"><FolderLock size={15} /> The preview uses case data only inside this browser session.</div>}
         </section>
       </div>
+      {reportHistory.length > 0 && (
+        <section className="report-history panel-card" aria-labelledby="report-history-title">
+          <div className="panel-card-head">
+            <h3 id="report-history-title">Stored report history</h3>
+            <span>{reportHistory.length} retained</span>
+          </div>
+          <p>Each PDF is a frozen snapshot. Older reports stay marked superseded and are never silently promoted after the current report is deleted.</p>
+          <div className="report-history-list">
+            {reportHistory.map((item) => (
+              <article key={item.id}>
+                <div>
+                  <strong>{item.status === "CURRENT" ? "Current report" : "Superseded report"}</strong>
+                  <small>{friendlyDateTime(item.generatedAt)} · {item.includedFindingIds.length} finding{item.includedFindingIds.length === 1 ? "" : "s"} · SHA-256 {item.sha256.slice(0, 16)}…</small>
+                </div>
+                <div>
+                  <a className="button button-secondary button-small" href={`/api/v1/cases/${caseData.id}/reports/${item.id}`}><Download size={13} /> PDF</a>
+                  <a className="button button-ghost button-small" href={`/api/v1/cases/${caseData.id}/reports/${item.id}/manifest`} target="_blank" rel="noreferrer"><FileSearch size={13} /> Manifest</a>
+                  <button type="button" className="button button-danger button-small" onClick={() => removeReport(item.id)} disabled={Boolean(deletingReport) || writesAreLocked}>{deletingReport === item.id ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />} Delete</button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
     </>
   );
 }
@@ -1327,6 +1753,38 @@ function PrivacyTab({ caseData, setCaseData, router, setError, setToast, writesA
   const [saving, setSaving] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const deleteDialogRef = useRef<HTMLDialogElement>(null);
+  const deleteTriggerRef = useRef<HTMLButtonElement>(null);
+  const keepReviewRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!confirmDelete) return;
+    const dialog = deleteDialogRef.current;
+    if (!dialog) return;
+    const trigger = deleteTriggerRef.current;
+    if (!dialog.open) dialog.showModal();
+    keepReviewRef.current?.focus();
+    return () => {
+      if (dialog.open) dialog.close();
+      trigger?.focus();
+    };
+  }, [confirmDelete]);
+
+  useEffect(() => {
+    if (!confirmDelete) return;
+    const handleEscape = (event: WindowEventMap["keydown"]) => {
+      if (event.key !== "Escape" || deleting) return;
+      event.preventDefault();
+      setConfirmDelete(false);
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [confirmDelete, deleting]);
+
+  function closeDeleteDialog() {
+    if (!deleting) setConfirmDelete(false);
+  }
+
   async function saveRetention() {
     if (writesAreLocked) { setError("Wait for the current case operation to finish before changing retention."); return; }
     setSaving(true);
@@ -1338,14 +1796,33 @@ function PrivacyTab({ caseData, setCaseData, router, setError, setToast, writesA
   }
   return (
     <>
-      <SectionTitle eyebrow="Privacy controls" title="Keep only what you need, for only as long as you need it" text="The demo is synthetic-only, but it still exercises case-scoped storage, no-content logging, retention, and verified deletion." />
+      <SectionTitle eyebrow="Privacy controls" title="Keep only what you need, for only as long as you need it" text={caseData.mode === "SANDBOX" ? "This fictional review uses the same case-scoped storage, content-free operational logs, retention, and verified deletion as a private review." : "Your private review uses case-scoped storage, content-free operational logs, short retention, and verified deletion."} />
       <div className="privacy-settings-grid">
-        <section className="panel-card"><div className="privacy-setting-icon"><Clock3 size={20} /></div><h3>Automatic deletion</h3><p>Choose a short retention window. Updating the setting restarts the window from now.</p><label className="field-label">Retention window<select value={retention} onChange={(event) => setRetention(Number(event.target.value))}><option value={1}>1 hour</option><option value={24}>24 hours</option><option value={72}>3 days</option><option value={168}>7 days</option></select></label><button type="button" className="button button-secondary" onClick={saveRetention} disabled={saving || writesAreLocked}>{saving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />} Save retention</button></section>
-        <section className="panel-card"><div className="privacy-setting-icon"><FolderLock size={20} /></div><h3>Artifact inventory</h3><p>Deletion covers the structured case snapshot and every case-owned stored object.</p><dl className="inventory-list"><div><dt>Documents</dt><dd>{caseData.documents.length}</dd></div><div><dt>Reviewed facts</dt><dd>{caseData.facts.length}</dd></div><div><dt>Findings</dt><dd>{caseData.findings.length}</dd></div><div><dt>Reports</dt><dd>{caseData.lastReport ? 1 : 0}</dd></div></dl></section>
+        <section className="panel-card"><div className="privacy-setting-icon"><Clock3 size={20} /></div><h3>Automatic deletion</h3><p>Choose a short retention window. Updating the setting restarts the window from now.</p><label className="field-label">Retention window<select value={retention} onChange={(event) => setRetention(Number(event.target.value))}>{RETENTION_POLICY.options.map((option) => (<option key={option.hours} value={option.hours}>{option.label}</option>))}</select></label><button type="button" className="button button-secondary" onClick={saveRetention} disabled={saving || writesAreLocked}>{saving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />} Save retention</button></section>
+        <section className="panel-card"><div className="privacy-setting-icon"><FolderLock size={20} /></div><h3>Artifact inventory</h3><p>Deletion covers the structured case snapshot and every case-owned stored object.</p><dl className="inventory-list"><div><dt>Documents</dt><dd>{caseData.documents.length}</dd></div><div><dt>Reviewed facts</dt><dd>{caseData.facts.length}</dd></div><div><dt>Findings</dt><dd>{caseData.findings.length}</dd></div><div><dt>Reports</dt><dd>{(caseData.reports ?? []).length}</dd></div></dl></section>
         <section className="panel-card"><div className="privacy-setting-icon"><ShieldCheck size={20} /></div><h3>Data boundaries</h3><ul className="privacy-boundaries"><li><Check size={13} /> No private records in the official-source corpus</li><li><Check size={13} /> No raw document text in standard logs</li><li><Check size={13} /> Case-scoped object keys and session authorization</li><li><Check size={13} /> No automatic sharing or external action</li></ul></section>
       </div>
-      <section className="danger-zone"><div><span><Trash2 size={18} /></span><div><h3>Delete this review now</h3><p>Documents, structured facts, findings, and generated reports are removed. Only a non-substantive deletion-verification hash remains.</p></div></div><button type="button" className="button button-danger" onClick={() => setConfirmDelete(true)} disabled={writesAreLocked}><Trash2 size={15} /> Delete case</button></section>
-      {confirmDelete && <div className="modal-backdrop" role="button" tabIndex={-1} aria-label="Close deletion dialog" onMouseDown={(event) => { if (event.target === event.currentTarget && !deleting) setConfirmDelete(false); }} onKeyDown={(event) => { if (event.key === "Escape" && !deleting) setConfirmDelete(false); }}><section className="delete-modal" role="dialog" aria-modal="true" aria-labelledby="delete-title"><span className="delete-modal-icon"><Trash2 size={23} /></span><h2 id="delete-title">Permanently delete this review?</h2><p>This removes all case-owned documents, facts, findings, and report files. The action cannot be undone.</p><div><button type="button" className="button button-secondary" onClick={() => setConfirmDelete(false)} disabled={deleting}>Keep review</button><button type="button" className="button button-danger" onClick={deleteCaseNow} disabled={deleting}>{deleting ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}{deleting ? "Verifying deletion…" : "Delete permanently"}</button></div></section></div>}
+      <section className="danger-zone"><div><span><Trash2 size={18} /></span><div><h3>Delete this review now</h3><p>Documents, structured facts, findings, and generated reports are removed. Only a non-substantive deletion-verification hash remains.</p></div></div><button ref={deleteTriggerRef} type="button" className="button button-danger" onClick={() => setConfirmDelete(true)} disabled={writesAreLocked}><Trash2 size={15} /> Delete case</button></section>
+      {confirmDelete && (
+        <dialog
+          ref={deleteDialogRef}
+          className="delete-modal"
+          aria-labelledby="delete-title"
+          aria-describedby="delete-description"
+          onCancel={(event) => {
+            event.preventDefault();
+            closeDeleteDialog();
+          }}
+        >
+          <span className="delete-modal-icon"><Trash2 size={23} /></span>
+          <h2 id="delete-title">Permanently delete this review?</h2>
+          <p id="delete-description">This removes all case-owned documents, facts, findings, and report files. The action cannot be undone.</p>
+          <div>
+            <button ref={keepReviewRef} type="button" className="button button-secondary" onClick={closeDeleteDialog} disabled={deleting}>Keep review</button>
+            <button type="button" className="button button-danger" onClick={deleteCaseNow} disabled={deleting}>{deleting ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}{deleting ? "Verifying deletion…" : "Delete permanently"}</button>
+          </div>
+        </dialog>
+      )}
     </>
   );
 }

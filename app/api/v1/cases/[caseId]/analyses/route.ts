@@ -38,7 +38,20 @@ export async function POST(request: Request, context: Context) {
         true,
       );
     }
-    if (prior !== "RESERVED") return jsonResponse(prior.body, { status: prior.status });
+    if (prior !== "RESERVED") {
+      const reference = prior.reference;
+      if (reference.kind !== "analysis" || reference.caseId !== caseId) return notFound();
+      const caseData = await getCase(caseId, identity.user.userId);
+      return caseData
+        ? jsonResponse(
+            {
+              analysis: { id: reference.analysisId, status: "RESULTS_READY" },
+              case: caseData,
+            },
+            { status: prior.status },
+          )
+        : notFound();
+    }
     reserved = true;
 
     const caseData = await getCase(caseId, identity.user.userId);
@@ -107,7 +120,7 @@ export async function POST(request: Request, context: Context) {
     try {
       await completeIdempotencyKey(identity.user.userId, scope, idempotency.key, {
         status: 201,
-        body: responseBody,
+        reference: { kind: "analysis", caseId: caseData.id, analysisId },
       });
     } catch {
       // The analysis snapshot is committed and remains authoritative.

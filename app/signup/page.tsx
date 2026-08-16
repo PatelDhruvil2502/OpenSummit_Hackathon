@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { ArrowLeft, UserPlus, ShieldCheck } from "lucide-react";
 import { Brand } from "@/components/brand";
 import { getChatGPTUser } from "@/app/chatgpt-auth";
+import { COMPANY } from "@/lib/company";
 import { accountSignInPath, safeRelativeReturnPath } from "@/lib/identity";
 
 export const metadata: Metadata = {
@@ -81,6 +82,13 @@ export default async function SignUpPage({
             maxLength={128}
             required
           />
+          <label className="auth-legal-consent" htmlFor="terms-accepted">
+            <input id="terms-accepted" name="terms_accepted" type="checkbox" value="1" required />
+            <span>
+              I agree to the <Link href="/terms" target="_blank" rel="noreferrer">Terms of service</Link> and acknowledge the{" "}
+              <Link href="/privacy" target="_blank" rel="noreferrer">Privacy policy</Link> (version {COMPANY.policyVersion}).
+            </span>
+          </label>
           <button className="button button-primary button-full" type="submit">
             <ShieldCheck size={17} /> Create account
           </button>

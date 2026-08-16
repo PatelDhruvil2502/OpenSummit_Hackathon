@@ -3,24 +3,44 @@ import { defineConfig } from "vite";
 import hostingConfig from "./.openai/hosting.json" with { type: "json" };
 import { sites } from "./build/sites-vite-plugin.js";
 
-const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
-  "00000000-0000-4000-8000-000000000000";
+/**
+ * Local development and OpenAI Sites hosting both inject their own binding
+ * values, so a placeholder identifier is correct there. A self-hosted
+ * Cloudflare deployment must supply the real D1 database id, which is why every
+ * binding value below is overridable from the environment. See DEPLOYMENT.md.
+ */
+const PLACEHOLDER_DATABASE_ID = "00000000-0000-4000-8000-000000000000";
 
 const { d1, r2 } = hostingConfig;
+
+const workerName = process.env.CLOUDFLARE_WORKER_NAME ?? "wageshield-h1b";
+const databaseName = process.env.CLOUDFLARE_D1_DATABASE_NAME ?? "site-creator-d1";
+const databaseId = process.env.CLOUDFLARE_D1_DATABASE_ID ?? PLACEHOLDER_DATABASE_ID;
+const bucketName = process.env.CLOUDFLARE_R2_BUCKET_NAME ?? "site-creator-r2";
+const retentionCron = process.env.CLOUDFLARE_RETENTION_CRON ?? "*/15 * * * *";
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 
 const localBindingConfig = {
+  name: workerName,
   main: "./worker/index.ts",
+  // Preserve dashboard-managed text variables on direct Wrangler deploys.
+  // Secrets are preserved by Wrangler independently.
+  keep_vars: true,
   compatibility_flags: ["nodejs_compat"],
-  triggers: { crons: ["*/15 * * * *"] },
+  triggers: { crons: [retentionCron] },
+  observability: { enabled: true },
   d1_databases: d1
     ? [
         {
           binding: d1,
-          database_name: "site-creator-d1",
-          database_id: SITE_CREATOR_PLACEHOLDER_DATABASE_ID,
+          database_name: databaseName,
+          database_id: databaseId,
+          // Project-relative here; the Cloudflare plugin rewrites it so the
+          // emitted dist/server/wrangler.json points back at ./drizzle, letting
+          // `wrangler d1 migrations apply` use the checked-in migrations.
+          migrations_dir: "drizzle",
         },
       ]
     : [],
@@ -28,7 +48,7 @@ const localBindingConfig = {
     ? [
         {
           binding: r2,
-          bucket_name: "site-creator-r2",
+          bucket_name: bucketName,
         },
       ]
     : [],

@@ -1,81 +1,81 @@
 # WageShield H-1B
 
-WageShield is a privacy-first evidence auditor for H-1B employment records. It organizes a worker-controlled case, keeps every material fact linked to a source excerpt, runs four deterministic checks, and reconstructs a selective redacted PDF for human review.
+WageShield is a privacy-first evidence auditor for H-1B employment records. It keeps each reviewed fact linked to a source excerpt, runs four deterministic documentary checks, and reconstructs a selective, redacted PDF for human review.
 
-It does **not** decide that a law was broken, calculate a legally owed amount, file a complaint, or contact an employer or agency.
+It does **not** decide that a law was broken, calculate a legally owed amount, file a complaint, contact an employer or agency, or provide legal advice.
 
-## What is included
+## Launch posture
 
-- A polished responsive landing page, methodology page, private case list, and seven-part review workspace.
-- Three complete synthetic evaluation cases: a guided positive case, a clean negative control, and an intentionally ambiguous abstention case.
-- A blank synthetic workflow with validated PDF/PNG/JPEG upload and a manual reviewed-fact fallback.
-- Four pure, network-free rules for wage benchmarking, nonproductive time, deductions/fees, and employment-fact consistency.
-- Integer-cent money arithmetic, explicit uncertainty states, evidence excerpts, official-source context, and reproducible calculation rows.
-- Case-scoped Cloudflare D1 persistence and private R2 document/report objects.
-- Email and password sign up / sign in, with accounts and sessions stored in D1, plus optional Sign in with ChatGPT on hosted Sites.
-- Short retention settings, deletion verification, and non-substantive deletion tombstones.
-- Allowlisted PDF reconstruction with selectable findings, worker/employer redaction, SHA-256 verification, and a JSON manifest.
+The code supports two deliberately different uses:
 
-## Quick start
+- **Public evaluation:** synthetic records only. The included guided, clean-control, and ambiguous cases are fictional and visibly marked.
+- **Access-controlled private beta:** a tester may use a record they are authorized to possess after accepting the served terms and reviewing the known limits in [SECURITY.md](SECURITY.md). This is not a certification that the service is ready for unrestricted public handling of immigration or payroll records.
+
+The remaining launch work is operator configuration and independent review, not an ML-model download. WageShield makes no external OCR or model call: searchable PDF text is parsed inside the Worker, images route to evidence-linked manual review, and every rule is deterministic. The only external API integration is optional-in-development but required-for-production password-reset email through Resend.
+
+## Included product
+
+- Responsive landing, methodology, policy, account, case-list, and seven-part review surfaces.
+- Email/password accounts, hashed sessions, account export/deletion, single-use password recovery, and optional OpenAI Sites identity.
+- Guided positive, clean negative-control, and intentionally ambiguous synthetic cases.
+- PDF/PNG/JPEG upload with signature and structural validation, bounded text-layer parsing, and manual reviewed-fact fallback.
+- Deterministic wage, nonproductive-time, deductions/fees, and employment-fact checks using exact or integer-cent arithmetic.
+- Case-scoped Cloudflare D1 persistence and private R2 document/report storage.
+- Selective report generation with configurable redaction, SHA-256 verification, and a JSON manifest.
+- One-hour to seven-day case retention, 24-hour default, immediate verified deletion, and a scheduled expiry sweep every 15 minutes.
+
+## Local setup
 
 Requirements: Node.js 22.13 or newer.
 
 ```bash
-npm install
+npm ci
+cp .env.example .env.local
+cp .dev.vars.example .dev.vars
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The local Sites runtime emulates the configured `DB` and `BUCKET` bindings; no cloud credentials or API keys are needed.
+Open [http://localhost:3000](http://localhost:3000). Local D1 and R2 bindings are emulated; no cloud account, API key, or model is needed for the product workflow. Without Resend configuration, a requested local password-reset link is written to the local development log.
 
-Create an account at `/signup`. Email, display name, and a PBKDF2 password hash are stored in D1. Sign in at `/signin` issues an HttpOnly session cookie. Cases stay scoped to that account.
-
-Useful commands:
+Before sharing a build, run:
 
 ```bash
-npm run lint
-npm run typecheck
-npm run test:unit
-npm test
-npm run build
-npm run db:generate
+npm run preflight
 ```
+
+The preflight runs lint, type checking, Drizzle history validation, fresh/upgrade migration tests, unit tests, a deployment build, and all integration suites in `tests/*.test.mjs`.
 
 ## Demo path
 
-1. Choose **Open guided demo**.
-2. Confirm the two clear-use statements and create the private review.
-3. Inspect each finding's evidence, exact calculation, official context, assumptions, and review questions.
-4. Open **Report**, select findings and redactions, then generate the evidence packet.
-5. Open **Privacy** to change retention or exercise complete case deletion.
-
-The hosted demo accepts fictional records only. The guided fixtures are visibly watermarked and are not real people or employers.
+1. Open the synthetic sandbox and create the guided review.
+2. Inspect every finding's evidence, calculation, official context, assumptions, and review questions.
+3. Open **Report**, explicitly select what may leave the review, choose redactions, and generate the evidence packet.
+4. Open **Privacy** to change retention or exercise verified deletion.
+5. For the blank workflow, upload only a generated synthetic PDF or image, confirm source/page/excerpt references, and run the same checks.
 
 ## Architecture
 
 ```text
-React / Next-compatible App Router UI
-          |
-Cloudflare Worker API routes
-          |
-   +------+------------------+
-   |                         |
-D1 case snapshots        R2 private objects
-   |                         |
-reviewed facts         documents + reports
-   +-----------+-------------+
-               |
-      deterministic rules
-               |
-  evidence-linked findings + PDF
+React 19 + Vinext App Router
+             |
+Cloudflare-compatible Worker
+       +-----+------------------+
+       |                        |
+  D1 structured state      R2 private objects
+       |                        |
+accounts, cases, facts     documents + reports
+       +------------+-----------+
+                    |
+          deterministic rules
+                    |
+        evidence-linked PDF + manifest
 ```
 
-The public demo is deliberately dependency-free at runtime. Guided cases contain pre-reviewed synthetic facts; blank cases use an explicit human-reviewed structured fallback after upload. The extraction boundary is represented in the fact/evidence contracts, but external OCR/model calls are not enabled in the public demo. This keeps the deployed project fully functional without sending records to a third party.
-
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for boundaries and [docs/SPEC_DECISIONS.md](docs/SPEC_DECISIONS.md) for blueprint conflicts resolved during implementation.
+Private evidence and public official-source context stay separate. Parsers can only propose `NEEDS_REVIEW` facts; reviewed facts are the sole rule input. Reports are rebuilt from allowlisted structured fields rather than copying original document layers. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/SPEC_DECISIONS.md](docs/SPEC_DECISIONS.md).
 
 ## Main API
 
-All routes live under `/api/v1`:
+All versioned routes live under `/api/v1`:
 
 - `GET|POST /cases`
 - `GET|PATCH|DELETE /cases/:caseId`
@@ -88,25 +88,10 @@ All routes live under `/api/v1`:
 - `GET /cases/:caseId/reports/:reportId`
 - `GET /cases/:caseId/reports/:reportId/manifest`
 
-Cross-case access returns the same 404-shaped response as a missing case. Error payloads contain only a stable code, safe message, request ID, and retryability flag.
+Cross-account access has the same 404-shaped response as a missing case. Error payloads expose only a stable code, safe message, request ID, and retryability flag.
 
-All case routes require an authenticated user. Hosted requests use the stable `oai-authenticated-user-id` supplied by Sites; neither client-provided owner IDs nor email addresses are accepted for authorization. Local development identity cookies are honored only on `localhost`, `127.0.0.1`, or `::1`.
+## Deployment
 
-## Project map
+[DEPLOYMENT.md](DEPLOYMENT.md) is the complete operator runbook for OpenAI Sites and direct Cloudflare deployment, D1 migration, R2 setup, Resend, trusted identity, policy variables, smoke tests, and launch gates.
 
-```text
-app/                  pages and versioned API routes
-components/           interactive product UI
-lib/fixtures.ts       synthetic canonical cases
-lib/rules.ts          four deterministic modules
-lib/report.ts         allowlisted PDF reconstruction
-lib/storage.ts        D1/R2 case-scoped persistence
-db/ + drizzle/        schema and migrations
-tests/                rendered-route checks
-output/pdf/           verified synthetic sample report
-docs/                 design and specification decisions
-```
-
-## Safety and scope
-
-Read [SECURITY.md](SECURITY.md) and [PRIVACY.md](PRIVACY.md) before adapting the demo for real records. Production use would additionally require malware scanning, retention jobs, key management, incident response, and formal legal/privacy review beyond this hackathon implementation.
+Read [PRIVACY.md](PRIVACY.md), [SECURITY.md](SECURITY.md), and [TERMS.md](TERMS.md) before accepting real private-beta records. The served `/privacy`, `/security`, and `/terms` pages are the visitor-facing copies; their entity, jurisdiction, and contact placeholders must be replaced and reviewed by counsel before launch.

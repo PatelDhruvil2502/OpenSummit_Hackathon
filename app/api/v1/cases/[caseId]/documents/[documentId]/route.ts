@@ -43,8 +43,16 @@ export async function DELETE(request: Request, context: Context) {
     if (!caseData) return notFound();
     const knownInSnapshot = caseData.documents.some((document) => document.id === documentId);
     if (knownInSnapshot) {
+      const removedFactIds = new Set(
+        caseData.facts
+          .filter((fact) => fact.evidence.documentId === documentId)
+          .map((fact) => fact.id),
+      );
       caseData.documents = caseData.documents.filter((document) => document.id !== documentId);
       caseData.facts = caseData.facts.filter((fact) => fact.evidence.documentId !== documentId);
+      caseData.corrections = caseData.corrections.filter(
+        (correction) => !removedFactIds.has(correction.factId),
+      );
       caseData.payPeriods = caseData.payPeriods.filter(
         (period) =>
           period.sourceDocumentId !== documentId && period.evidence.documentId !== documentId,

@@ -1,5 +1,12 @@
 import { sql } from "drizzle-orm";
-import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
+import {
+  index,
+  integer,
+  primaryKey,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 
 export const accounts = sqliteTable(
   "accounts",
@@ -8,6 +15,8 @@ export const accounts = sqliteTable(
     email: text("email").notNull().unique(),
     displayName: text("display_name").notNull(),
     passwordHash: text("password_hash").notNull(),
+    policyAcceptedAt: text("policy_accepted_at"),
+    policyVersion: text("policy_version"),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
   },
@@ -29,6 +38,44 @@ export const authSessions = sqliteTable(
     index("idx_auth_sessions_account").on(table.accountId),
     index("idx_auth_sessions_expiry").on(table.expiresAt),
   ],
+);
+
+/**
+ * Single-use password reset tokens. Only the SHA-256 hash of the emailed token
+ * is stored, so a database read cannot be replayed into an account takeover.
+ */
+export const passwordResets = sqliteTable(
+  "password_resets",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id")
+      .notNull()
+      .references(() => accounts.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull().unique(),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    usedAt: text("used_at"),
+  },
+  (table) => [
+    uniqueIndex("idx_password_resets_account").on(table.accountId),
+    index("idx_password_resets_expiry").on(table.expiresAt),
+  ],
+);
+
+/**
+ * Sign-in and sign-up throttling. Keyed by an opaque bucket string that already
+ * encodes the action and either the client IP or the normalized email, so no
+ * raw credential material is stored.
+ */
+export const authRateLimits = sqliteTable(
+  "auth_rate_limits",
+  {
+    bucket: text("bucket").primaryKey(),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    windowStartedAt: text("window_started_at").notNull(),
+    lockedUntil: text("locked_until"),
+  },
+  (table) => [index("idx_auth_rate_limits_window").on(table.windowStartedAt)],
 );
 
 export const cases = sqliteTable(

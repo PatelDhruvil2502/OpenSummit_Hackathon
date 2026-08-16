@@ -30,7 +30,7 @@ export async function generateMetadata(): Promise<Metadata> {
       ? "http"
       : "https";
   const origin = new URL(`${protocol}://${host}`);
-  const socialImage = new URL("/og.png", origin).toString();
+  const socialImage = new URL("/og-launch.png", origin).toString();
 
   return {
     metadataBase: origin,
@@ -70,7 +70,12 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        {children}
+        <a className="skip-link" href="#application-content">
+          Skip to page content
+        </a>
+        <div id="application-content" tabIndex={-1}>
+          {children}
+        </div>
       </body>
     </html>
   );

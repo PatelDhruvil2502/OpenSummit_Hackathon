@@ -7,7 +7,7 @@ import {
   recordAuthAttempt,
 } from "@/lib/accounts";
 import { requestUsesHttps, safeRelativeReturnPath } from "@/lib/identity";
-import { mutationGuard } from "@/lib/security";
+import { mutationGuard, parseFormDataBody } from "@/lib/security";
 
 const SigninSchema = z.object({
   email: z.string().trim().email().max(254),
@@ -18,7 +18,9 @@ const SigninSchema = z.object({
 export async function POST(request: Request) {
   const guarded = mutationGuard(request);
   if (guarded) return guarded;
-  const form = await request.formData();
+  const body = await parseFormDataBody(request);
+  if (!body.ok) return body.response;
+  const form = body.value;
   const returnTo = safeRelativeReturnPath(
     typeof form.get("return_to") === "string" ? String(form.get("return_to")) : "/",
   );

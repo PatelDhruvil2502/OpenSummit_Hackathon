@@ -1,22 +1,33 @@
-# Blueprint decisions
+# Product and specification decisions
 
-The source blueprint contains a few internally inconsistent examples. The implementation resolves them explicitly so code, fixtures, UI, tests, and reports agree.
+These choices are canonical across fixtures, API contracts, UI, tests, and reports.
 
-## Canonical choices
+## Analysis
 
-- Later lifecycle/API contracts are canonical: plural `/uploads`, `/analyses`, and `/corrections`, plus an explicit `REPORT_FAILED` state.
-- Public finding output uses the neutral five-status vocabulary and keeps user disposition separate from status.
-- The hero case returns three `POSSIBLE_DISCREPANCY` results and one worksite `HUMAN_REVIEW_REQUIRED` result.
-- The hero fixture contains six complete comparable pay periods plus a separate zero-pay nonproductive interval. This makes the six-period narrative reproducible.
-- `$3,769.23 × 26` is represented as `$97,999.98`, not `$98,000.00`.
-- A `$120,000` annual benchmark across six biweekly periods is rounded once after aggregation. Compared with six periods of `$3,769.23`, the exact documentary difference is `$5,076.93`, not `$5,076.90`.
-- Fact review states accepted by the rule engine are `CONFIRMED` and `USER_CORRECTED`; unreviewed model candidates remain `NEEDS_REVIEW`.
-- A temporary one-day trip is a clean control; unknown-duration and remote instructions route to human review; only supported ongoing changes can become a possible difference.
-- A contract clause is never represented as a completed deduction. Observed payroll transactions and direct payment requests remain distinct evidence types.
+- Public findings use the neutral five-status vocabulary; user disposition is separate from documentary status.
+- The guided case has three `POSSIBLE_DISCREPANCY` findings and one worksite `HUMAN_REVIEW_REQUIRED` finding.
+- The guided wage comparison contains six complete biweekly periods plus a separate zero-pay nonproductive interval.
+- `$3,769.23 × 26` is `$97,999.98`; a `$120,000` annual benchmark across six periods is rounded once after aggregation, yielding a documented `$5,076.93` difference.
+- Only `CONFIRMED` and `USER_CORRECTED` facts can enter a rule. Parser candidates remain `NEEDS_REVIEW`.
+- A one-day temporary trip is a clean control. Unknown-duration and remote instructions require review; only supported ongoing changes can become a possible discrepancy.
+- A contract clause is not a completed deduction. Observed payroll transactions and direct payment requests remain distinct evidence types.
 
-## Intentional demo constraints
+## Product boundary
 
-- Public use is synthetic-only.
-- Case ownership uses a D1 account id after email/password sign-up, or a Site-forwarded ChatGPT user ID when those headers are present.
-- External OCR/model extraction is replaced by canonical reviewed fixtures and a manual reviewed-fact fallback. The rules, evidence, report, storage, and deletion vertical slice remains fully operational without network/vendor dependency.
-- Immediate deletion is implemented and verified. Automatic expiry requires a scheduled production retention worker and is disclosed in the privacy notes.
+- The public evaluation path is synthetic-only.
+- The standard path exists for an access-controlled private beta and requires the user to confirm authorization. It must not be advertised as unrestricted production handling until the independent security, privacy, and legal gates in `SECURITY.md` are complete.
+- The product has no external OCR/model dependency. Searchable-PDF text is handled locally, while images and uncertain values require evidence-linked manual review.
+- Rules, evidence, reports, storage, account recovery, export, and deletion remain operational without an AI vendor.
+
+## Identity and retention
+
+- Case ownership uses a D1 account ID. A Site-forwarded ID is accepted only when `TRUST_FORWARDED_IDENTITY=true` behind a gateway that sanitizes those headers.
+- New cases default to 24-hour retention, selectable from one hour to seven days.
+- Expired cases are unreadable immediately. A scheduled Worker runs every 15 minutes to delete their D1 records and R2 objects and verify removal.
+- Immediate case deletion and account deletion use the same inventory-and-verify boundary. Only a content-free one-way case tombstone remains.
+
+## Deployment history
+
+- Drizzle migrations are append-only. `0000` through `0005` are treated as already shipped; password recovery and policy consent are later migrations.
+- OpenAI Sites owns real D1/R2 resources from the logical `DB` and `BUCKET` declarations.
+- A directly-addressable Cloudflare Worker must keep forwarded identity disabled unless a separately verified sanitizing gateway protects the origin.

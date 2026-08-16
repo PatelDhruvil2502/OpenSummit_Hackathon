@@ -9,12 +9,14 @@ import {
 import { authenticateCaseRequest } from "@/lib/case-auth";
 import { assertCaseTransition } from "@/lib/case-workflow";
 import { generateReportPdf } from "@/lib/report";
+import { API_POLICY } from "@/lib/product-config";
 import { mutationGuard, parseJsonBody, requireIdempotencyKey } from "@/lib/security";
 import { jsonResponse } from "@/lib/session";
 import {
   completeIdempotencyKey,
   deleteReportObject,
   getCase,
+  getReportManifest,
   listReports,
   releaseIdempotencyKey,
   reserveIdempotencyKey,
@@ -28,10 +30,12 @@ const ReportSchema = z.object({
   included_finding_ids: z
     .array(z.string().min(1))
     .min(1)
-    .max(20)
+    .max(API_POLICY.maximumReportFindings)
     .refine((ids) => new Set(ids).size === ids.length, "Finding IDs must be unique"),
   redact_worker_name: z.boolean().default(true),
   redact_employer_name: z.boolean().default(false),
+  include_case_title: z.boolean().default(false),
+  include_position: z.boolean().default(false),
 });
 
 type Context = { params: Promise<{ caseId: string }> };
@@ -43,7 +47,9 @@ export async function GET(request: Request, context: Context) {
     const { caseId } = await context.params;
     const caseData = await getCase(caseId, identity.user.userId);
     if (!caseData) return notFound();
-    return jsonResponse({ reports: await listReports(caseId, identity.user.userId) });
+    return jsonResponse({
+      reports: await listReports(caseId, identity.user.userId, caseData.reports),
+    });
   } catch (error) {
     return internalError(error);
   }
@@ -72,7 +78,33 @@ export async function POST(request: Request, context: Context) {
         true,
       );
     }
-    if (prior !== "RESERVED") return jsonResponse(prior.body, { status: prior.status });
+    if (prior !== "RESERVED") {
+      const reference = prior.reference;
+      if (reference.kind !== "report" || reference.caseId !== caseId) return notFound();
+      const [caseData, manifest] = await Promise.all([
+        getCase(caseId, identity.user.userId),
+        getReportManifest(caseId, reference.reportId, identity.user.userId),
+      ]);
+      if (!caseData || !manifest) return notFound();
+      const reports = await listReports(caseId, identity.user.userId, caseData.reports);
+      const report = reports.find((item) => item.id === reference.reportId);
+      if (!report) return notFound();
+      caseData.reports = reports;
+      return jsonResponse(
+        {
+          report: {
+            id: report.id,
+            status: "READY",
+            sha256: report.sha256,
+            manifest,
+            download_url: `/api/v1/cases/${caseId}/reports/${report.id}`,
+            manifest_url: `/api/v1/cases/${caseId}/reports/${report.id}/manifest`,
+          },
+          case: caseData,
+        },
+        { status: prior.status },
+      );
+    }
     reserved = true;
 
     const caseData = await getCase(caseId, identity.user.userId);
@@ -81,11 +113,22 @@ export async function POST(request: Request, context: Context) {
       return notFound();
     }
     activeCase = caseData;
-    if (caseData.state !== "RESULTS_READY" || !caseData.findings.length) {
+    if (
+      (caseData.state !== "RESULTS_READY" && caseData.state !== "REPORT_FAILED") ||
+      !caseData.findings.length
+    ) {
       await releaseIdempotencyKey(identity.user.userId, scope, idempotency.key);
       return errorResponse(
         "FACT_REVIEW_REQUIRED",
         "Run the current reviewed evidence before generating a report.",
+        409,
+      );
+    }
+    if ((caseData.reports?.length ?? 0) >= API_POLICY.maximumReportsPerCase) {
+      await releaseIdempotencyKey(identity.user.userId, scope, idempotency.key);
+      return errorResponse(
+        "CASE_QUOTA_EXCEEDED",
+        `A review can retain at most ${API_POLICY.maximumReportsPerCase} generated reports. Delete an older report before generating another.`,
         409,
       );
     }
@@ -122,6 +165,8 @@ export async function POST(request: Request, context: Context) {
       includedFindingIds: parsed.data.included_finding_ids,
       redactWorkerName: parsed.data.redact_worker_name,
       redactEmployerName: parsed.data.redact_employer_name,
+      includeCaseTitle: parsed.data.include_case_title,
+      includePosition: parsed.data.include_position,
     });
     const reportId = `report_${crypto.randomUUID()}`;
     storedReportId = reportId;
@@ -179,7 +224,7 @@ export async function POST(request: Request, context: Context) {
     try {
       await completeIdempotencyKey(identity.user.userId, scope, idempotency.key, {
         status: 201,
-        body: responseBody,
+        reference: { kind: "report", caseId: caseData.id, reportId },
       });
     } catch {
       // The report snapshot is committed and remains authoritative even if

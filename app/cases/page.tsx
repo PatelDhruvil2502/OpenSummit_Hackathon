@@ -10,7 +10,12 @@ export const metadata: Metadata = {
 
 export const dynamic = "force-dynamic";
 
-export default async function CasesPage() {
+export default async function CasesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ deleted?: string }>;
+}) {
+  const query = await searchParams;
   const user = await requireChatGPTUser("/cases");
   return (
     <main className="subpage">
@@ -21,6 +26,11 @@ export default async function CasesPage() {
         <p>Signed in as {user.email}. Your reviews follow your account across browser sessions and expire automatically.</p>
       </section>
       <section className="page-shell cases-content">
+        {query.deleted === "1" && (
+          <p className="form-success" role="status">
+            The review and its private document/report objects were permanently deleted.
+          </p>
+        )}
         <CasesList />
       </section>
     </main>

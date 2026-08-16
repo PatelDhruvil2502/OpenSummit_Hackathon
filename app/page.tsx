@@ -104,7 +104,7 @@ export default async function Home() {
       <section className="proof-band" aria-label="Product commitments">
         <div className="page-shell proof-grid">
           <div><strong>4</strong><span>narrow, versioned checks</span></div>
-          <div><strong>100%</strong><span>finding-to-evidence traceability</span></div>
+          <div><strong>Source-linked</strong><span>reviewed facts and supported findings</span></div>
           <div><strong>0</strong><span>automatic complaints or contacts</span></div>
           <div><strong>24h</strong><span>default review retention</span></div>
         </div>
@@ -188,7 +188,7 @@ export default async function Home() {
             <strong>WageShield H-1B</strong>
             <p>Evidence organization and issue spotting. Not legal advice.</p>
           </div>
-          <div className="footer-links"><Link href="/methodology">Methodology</Link><Link href="/cases">My reviews</Link><a href="https://www.dol.gov/agencies/whd/workers/h1b" target="_blank" rel="noreferrer">DOL worker guidance</a></div>
+          <div className="footer-links"><Link href="/methodology">Methodology</Link><Link href="/cases">My reviews</Link><Link href="/privacy">Privacy</Link><Link href="/terms">Terms</Link><Link href="/security">Security</Link><a href="https://www.dol.gov/agencies/whd/workers/h1b" target="_blank" rel="noreferrer">DOL worker guidance</a></div>
           <small>Private evidence review · Human judgment required</small>
         </div>
       </footer>

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { ArrowRight, BookOpen } from "lucide-react";
+import { ArrowRight, BookOpen, FlaskConical } from "lucide-react";
 
 export function LandingActions({ signedIn, signInPath }: { signedIn: boolean; signInPath: string }) {
   return (
@@ -9,6 +9,9 @@ export function LandingActions({ signedIn, signInPath }: { signedIn: boolean; si
       </Link>
       <Link className="button button-secondary" href="/methodology">
         <BookOpen size={16} aria-hidden="true" /> How the checks work
+      </Link>
+      <Link className="button button-ghost" href="/sandbox">
+        <FlaskConical size={16} aria-hidden="true" /> Try a fictional demo
       </Link>
     </div>
   );
