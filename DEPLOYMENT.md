@@ -11,6 +11,11 @@ The recommended first release is a **private OpenAI Sites deployment** or an equ
 - One deployment target:
   - OpenAI Sites, which owns the Cloudflare resource wiring; or
   - a Cloudflare account with Workers, D1, R2, and Cron Triggers enabled.
+- For a direct private beta, use Workers Paid. The Free plan's 10 ms CPU limit is
+  too small to rely on for SSR, password hashing, and PDF parsing; Workers Paid
+  starts at $5 per account per month.
+- A valid Cloudflare billing profile is required to activate the R2 subscription
+  and Zero Trust onboarding, even when usage remains inside their free allowances.
 - A domain you control and a verified Resend sending domain for production account recovery.
 - A registered operating entity, governing jurisdiction, and monitored support/privacy/security mailboxes.
 
@@ -111,12 +116,18 @@ The Sites packaging flow validates these artifacts. A private URL is not evidenc
 
 ### Create resources once
 
-Authenticate Wrangler, then create one production database and one private bucket:
+Activate R2 first in **Cloudflare Dashboard → Storage & databases → R2 →
+Overview** and complete its subscription checkout. Choose Standard storage so
+the monthly R2 free allowance applies. Then authenticate Wrangler, verify the
+selected account, and create one production database and one private bucket:
 
 ```bash
 npx wrangler login
+npx wrangler whoami
 npx wrangler d1 create wageshield-production
+npx wrangler d1 info wageshield-production
 npx wrangler r2 bucket create wageshield-private-documents
+npx wrangler r2 bucket list
 ```
 
 Copy the returned D1 UUID and the selected names into an ignored `.env.local` based on `.env.example`. Never commit the UUID together with secrets, and never use the all-zero placeholder for a deployment. The binding values are read from `process.env` while Vite evaluates its configuration, so export the file into the build shell rather than assuming Vite will load it later.
@@ -145,7 +156,8 @@ If `00000000-0000-4000-8000-000000000000` appears, stop: Vite did not load the i
 
 ### Apply migrations before application code
 
-Check the append-only chain and take/confirm the D1 recovery point your Cloudflare plan provides. Then apply it to the remote binding:
+Check the append-only chain. D1 Time Travel is automatic; confirm its retention
+for the selected plan, then apply the migrations to the remote binding:
 
 ```bash
 npm run db:check
@@ -161,13 +173,41 @@ Review the migration list Wrangler shows before confirming. Never rename, edit, 
 npx wrangler deploy --config dist/server/wrangler.json
 ```
 
-Use the Cloudflare dashboard or `wrangler secret put` to configure `RESEND_API_KEY`; put `PUBLIC_APP_URL`, sender settings, and company/contact values in the Worker's runtime variables/secrets. `keep_vars: true` prevents later application deploys from silently erasing dashboard-managed text variables.
+Use **Workers & Pages → WageShield worker → Settings → Variables and Secrets**
+to configure `RESEND_API_KEY` as a Secret. Alternatively, target the generated
+configuration explicitly:
+
+```bash
+npx wrangler secret put RESEND_API_KEY --config dist/server/wrangler.json
+npx wrangler secret list --config dist/server/wrangler.json
+```
+
+Put `PUBLIC_APP_URL`, sender settings, and company/contact values in the
+Worker's runtime variables. `keep_vars: true` prevents later application
+deploys from silently erasing dashboard-managed text variables.
 
 The first deployment may be needed to learn the `workers.dev` origin. Set that exact HTTPS origin—or preferably the final custom-domain origin—as `PUBLIC_APP_URL` before account-recovery testing. Verify the Resend domain and its SPF/DKIM/DMARC configuration.
 
 Keep `TRUST_FORWARDED_IDENTITY` absent or `false`. If a future gateway supplies forwarded identity, first disable/bypass-proof the direct origin, restrict routes to the gateway, prove client headers are stripped, and only then enable the flag. A custom domain alone is not a sanitizing identity gateway.
 
 Confirm the Cron Trigger is visible in the deployed Worker's settings and alert on scheduled-handler exceptions. The handler purges expired sessions and expired cases; if verified object deletion fails, it throws so monitoring can detect the failure.
+
+### Restrict the investor deployment
+
+1. Complete Cloudflare Zero Trust onboarding on its Free plan.
+2. In **Zero Trust → Integrations → Identity providers**, enable One-time PIN.
+3. Create an Access Allow policy whose Include selector is **Emails**, listing
+   each exact founder/investor address. Do not use One-time PIN as the only
+   Include rule; that would allow any valid email address.
+4. Open **Workers & Pages → WageShield worker → Access**, select **Protect this
+   Worker behind Access**, choose **All traffic**, and apply the exact-email
+   policy. This protects the `workers.dev` hostname and preview routes together.
+5. Keep `TRUST_FORWARDED_IDENTITY=false`. Access is the outer gate; the
+   application continues to use its own account authorization inside it.
+
+Cron expressions run in UTC and a trigger update can take up to 15 minutes to
+propagate. Verify `*/15 * * * *` under **Settings → Triggers → Cron Triggers**
+and inspect Trigger Events after a test execution.
 
 ## 5. Deployment smoke test
 

@@ -66,7 +66,7 @@ test("keeps safety language, social metadata, and primary-source links in the pr
   for (const factSheet of ["62g", "62i", "62h", "62j"]) {
     assert.match(sourceCorpus, new RegExp(`dol\\.gov/.+/${factSheet}-h1b`, "i"));
   }
-  assert.match(layout, /new URL\("\/og\.png", origin\)/);
+  assert.match(layout, /new URL\("\/og-launch\.png", origin\)/);
   assert.match(layout, /card: "summary_large_image"/);
   assert.doesNotMatch(`${home}\n${methodology}`, /you are owed|guaranteed outcome|filed automatically/i);
 });
