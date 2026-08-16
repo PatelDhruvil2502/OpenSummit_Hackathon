@@ -15,6 +15,10 @@ PUBLIC_APP_URL=https://app.your-domain.example
 # Keep false for a directly reachable Cloudflare Worker.
 TRUST_FORWARDED_IDENTITY=false
 
+# Leave false for the real-data investor deployment. Set true only when you
+# intentionally want the explicitly fictional fixture sandbox.
+ENABLE_SANDBOX=false
+
 # The served policy pages read these at runtime in the Worker as well.
 NEXT_PUBLIC_COMPANY_LEGAL_NAME="Replace with registered operating entity"
 NEXT_PUBLIC_COMPANY_JURISDICTION="Replace with governing jurisdiction and venue"

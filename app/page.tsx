@@ -17,6 +17,7 @@ import { LandingActions } from "@/components/landing-actions";
 import { SiteHeader } from "@/components/site-header";
 import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { accountSignUpPath } from "@/lib/identity";
+import { sandboxIsEnabled } from "@/lib/runtime-flags";
 
 const CHECKS = [
   {
@@ -50,6 +51,7 @@ export const dynamic = "force-dynamic";
 export default async function Home() {
   const user = await getChatGPTUser();
   const signInPath = user ? "" : accountSignUpPath("/cases/new");
+  const showSandbox = sandboxIsEnabled();
   return (
     <main>
       <SiteHeader />
@@ -63,7 +65,7 @@ export default async function Home() {
               WageShield compares an H-1B worker&apos;s LCA, offer, pay records, timesheets, and work messages—then shows
               exactly what differs, how the math works, and what still needs human review.
             </p>
-            <LandingActions signedIn={Boolean(user)} signInPath={signInPath} />
+            <LandingActions signedIn={Boolean(user)} signInPath={signInPath} showSandbox={showSandbox} />
             <div className="hero-trust-row">
               <span><FolderLock size={15} /> Private case storage</span>
               <span><Calculator size={15} /> Deterministic math</span>
@@ -179,7 +181,7 @@ export default async function Home() {
         <span className="eyebrow">Start with the right boundary</span>
         <h2>A careful answer can be more useful than a confident one.</h2>
         <p>Create a private evidence review, or learn the full workflow first with clearly labeled fictional records.</p>
-        <LandingActions signedIn={Boolean(user)} signInPath={signInPath} />
+        <LandingActions signedIn={Boolean(user)} signInPath={signInPath} showSandbox={showSandbox} />
       </section>
 
       <footer className="site-footer">

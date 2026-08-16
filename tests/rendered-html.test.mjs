@@ -9,7 +9,7 @@ let anonymous;
 let authenticated;
 
 before(async () => {
-  harness = await createWorkerHarness("rendered-html");
+  harness = await createWorkerHarness("rendered-html", { enableSandbox: false });
   anonymous = harness.anonymous;
   authenticated = harness.client({
     id: "rendered-html-user",
@@ -40,6 +40,25 @@ test("server-renders the finished WageShield landing page", async () => {
   assert.match(html, /Private case storage/);
   assert.match(html, /Not legal advice/);
   assert.doesNotMatch(html, /Your site is taking shape|react-loading-skeleton|codex-preview/i);
+  assert.doesNotMatch(html, /Try a fictional demo/);
+});
+
+test("real-record deployments keep fictional fixtures unreachable", async () => {
+  const sandbox = await render("/sandbox");
+  assert.equal(sandbox.status, 404);
+
+  const { response, payload } = await authenticated.json("/api/v1/cases", {
+    method: "POST",
+    headers: { "idempotency-key": `sandbox-disabled:${crypto.randomUUID()}` },
+    json: {
+      mode: "sandbox",
+      scenario: "hero",
+      retention_hours: 24,
+      authorized_use_confirmed: true,
+    },
+  });
+  assert.equal(response.status, 400);
+  assert.equal(payload.error.code, "INVALID_REQUEST");
 });
 
 test("server-renders the methodology and case-list routes", async () => {

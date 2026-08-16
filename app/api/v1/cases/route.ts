@@ -12,6 +12,7 @@ import { createFixtureCase } from "@/lib/fixtures";
 import { generateFixtureDocumentPdf } from "@/lib/fixture-documents";
 import { API_POLICY, RETENTION_POLICY } from "@/lib/product-config";
 import { runAllRules } from "@/lib/rules";
+import { sandboxIsEnabled } from "@/lib/runtime-flags";
 import { mutationGuard, parseJsonBody, requireIdempotencyKey } from "@/lib/security";
 import { jsonResponse } from "@/lib/session";
 import {
@@ -114,6 +115,15 @@ export async function POST(request: Request) {
         400,
         false,
         validationDetails(parsed.error),
+      );
+    }
+
+    if (parsed.data.mode === "sandbox" && !sandboxIsEnabled()) {
+      await releaseIdempotencyKey(identity.user.userId, scope, idempotency.key);
+      return errorResponse(
+        "INVALID_REQUEST",
+        "Fictional sandbox cases are disabled for this deployment.",
+        400,
       );
     }
 

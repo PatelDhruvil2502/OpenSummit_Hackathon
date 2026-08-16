@@ -150,6 +150,7 @@ export async function createWorkerHarness(label = "hardening", options = {}) {
         // The harness emulates OpenAI Sites, whose gateway strips client
         // identity headers and injects authenticated values of its own.
         TRUST_FORWARDED_IDENTITY: options.trustForwardedIdentity === false ? "false" : "true",
+        ENABLE_SANDBOX: options.enableSandbox === false ? "false" : "true",
       },
       d1Databases: { DB: `${label}-db-${suffix}` },
       r2Buckets: { BUCKET: `${label}-bucket-${suffix}` },

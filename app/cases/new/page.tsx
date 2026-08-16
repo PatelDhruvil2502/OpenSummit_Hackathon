@@ -4,6 +4,7 @@ import { ArrowLeft, Check, FileUp, LockKeyhole, ShieldCheck, TimerReset } from "
 import { requireChatGPTUser } from "@/app/chatgpt-auth";
 import { SiteHeader } from "@/components/site-header";
 import { NewCaseForm } from "@/components/new-case-form";
+import { sandboxIsEnabled } from "@/lib/runtime-flags";
 
 export const metadata: Metadata = {
   title: "Start a review",
@@ -44,7 +45,9 @@ export default async function NewCasePage() {
             <strong>Short retention by default</strong>
             <p>The selected window schedules the full case—including uploaded files and generated reports—for deletion.</p>
           </div>
-          <Link href="/sandbox" className="sandbox-side-link">Need to learn the workflow first? <strong>Use fictional records in the sandbox →</strong></Link>
+          {sandboxIsEnabled() && (
+            <Link href="/sandbox" className="sandbox-side-link">Need to learn the workflow first? <strong>Use fictional records in the sandbox →</strong></Link>
+          )}
         </aside>
       </section>
     </main>

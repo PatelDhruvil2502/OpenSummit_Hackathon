@@ -41,6 +41,7 @@ OpenAI Sites reads the logical names from `.openai/hosting.json`. Direct Cloudfl
 | `EMAIL_REPLY_TO` | Recommended | No | Monitored support address |
 | `PUBLIC_APP_URL` | Required | No | Exact canonical HTTPS origin, without a path, query, credentials, or fragment |
 | `TRUST_FORWARDED_IDENTITY` | Target-specific | No | `true` for OpenAI Sites; absent/`false` for an ordinary direct Worker |
+| `ENABLE_SANDBOX` | Optional | No | Keep absent/`false` for a real-record private beta; `true` exposes fictional fixtures |
 | `NEXT_PUBLIC_COMPANY_LEGAL_NAME` | Required | No | Registered operating entity; must not contain “pending” |
 | `NEXT_PUBLIC_COMPANY_JURISDICTION` | Required | No | Counsel-approved governing law/venue |
 | `NEXT_PUBLIC_SUPPORT_EMAIL` | Required | No | Must not use `.example` |

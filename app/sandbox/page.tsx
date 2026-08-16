@@ -4,6 +4,8 @@ import { ArrowLeft, FlaskConical, LockKeyhole } from "lucide-react";
 import { getChatGPTUser, getSignInPath } from "@/app/chatgpt-auth";
 import { SiteHeader } from "@/components/site-header";
 import { SandboxCases } from "@/components/sandbox-cases";
+import { sandboxIsEnabled } from "@/lib/runtime-flags";
+import { notFound } from "next/navigation";
 
 export const metadata: Metadata = {
   title: "Fictional sandbox",
@@ -17,6 +19,7 @@ type SandboxPageProps = {
 };
 
 export default async function SandboxPage({ searchParams }: SandboxPageProps) {
+  if (!sandboxIsEnabled()) notFound();
   const params = await searchParams;
   const requestedScenario = Array.isArray(params.scenario) ? params.scenario[0] : params.scenario;
   const initialScenario = requestedScenario === "clean" || requestedScenario === "ambiguous" ? requestedScenario : "hero";

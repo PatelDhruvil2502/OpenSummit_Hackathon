@@ -9,6 +9,7 @@ import { env } from "cloudflare:workers";
 interface RuntimeFlags {
   TRUST_FORWARDED_IDENTITY?: string;
   PUBLIC_APP_URL?: string;
+  ENABLE_SANDBOX?: string;
 }
 
 function flags(): RuntimeFlags {
@@ -22,6 +23,15 @@ function flags(): RuntimeFlags {
  */
 export function trustsForwardedIdentity(): boolean {
   const declared = flags().TRUST_FORWARDED_IDENTITY;
+  return declared === "1" || declared === "true";
+}
+
+/**
+ * Fictional fixtures are an explicit development/evaluation capability. They
+ * stay unreachable in a real-record private beta unless an operator opts in.
+ */
+export function sandboxIsEnabled(): boolean {
+  const declared = flags().ENABLE_SANDBOX;
   return declared === "1" || declared === "true";
 }
 
