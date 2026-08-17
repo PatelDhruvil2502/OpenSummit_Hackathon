@@ -239,6 +239,19 @@ test("private-beta accounts cannot change to an uninvited email address", async 
   });
   try {
     const client = privateHarness.client(null, { origin: "http://localhost" });
+    const deniedSignup = await client.request("/api/auth/signup", {
+      method: "POST",
+      body: new URLSearchParams({
+        email: "outsider@example.test",
+        full_name: "Uninvited Reviewer",
+        password: "correct-horse-battery",
+        password_confirm: "correct-horse-battery",
+        terms_accepted: "1",
+      }),
+    });
+    assert.equal(deniedSignup.status, 303);
+    assert.match(deniedSignup.headers.get("location") ?? "", /error=not_invited/);
+
     const signup = await client.request("/api/auth/signup", {
       method: "POST",
       body: new URLSearchParams({

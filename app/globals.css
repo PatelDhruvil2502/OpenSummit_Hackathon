@@ -491,6 +491,42 @@ button {
   background: white;
 }
 
+.password-input {
+  position: relative;
+  min-width: 0;
+}
+
+.password-input > input {
+  padding-right: 50px;
+}
+
+.password-visibility-button {
+  position: absolute;
+  top: 50%;
+  right: 2px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  color: var(--slate);
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.password-visibility-button:hover {
+  color: var(--teal-dark);
+  background: var(--teal-soft);
+}
+
+.password-visibility-button:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: -3px;
+}
+
 .account-managed-note {
   padding: 14px;
   border-radius: 10px;

@@ -3,6 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { ArrowLeft, UserPlus, ShieldCheck } from "lucide-react";
 import { Brand } from "@/components/brand";
+import { PasswordInput } from "@/components/password-input";
 import { getChatGPTUser } from "@/app/chatgpt-auth";
 import { COMPANY } from "@/lib/company";
 import { accountSignInPath, safeRelativeReturnPath } from "@/lib/identity";
@@ -44,6 +45,12 @@ export default async function SignUpPage({
             Enter a name, a valid email, matching passwords of at least 8 characters.
           </p>
         )}
+        {query.error === "not_invited" && (
+          <p className="form-error" role="alert">
+            This email is not invited to the private demo. Ask the demo owner to add it to the
+            approved email list.
+          </p>
+        )}
         {query.error === "locked" && (
           <p className="form-error" role="alert">
             Too many account attempts. Wait a few minutes, then try again.
@@ -63,23 +70,23 @@ export default async function SignUpPage({
           <label htmlFor="email">Email</label>
           <input id="email" name="email" type="email" autoComplete="email" maxLength={254} required />
           <label htmlFor="password">Password</label>
-          <input
+          <PasswordInput
             id="password"
             name="password"
-            type="password"
             autoComplete="new-password"
             minLength={8}
             maxLength={128}
+            visibilityLabel="password"
             required
           />
           <label htmlFor="password-confirm">Confirm password</label>
-          <input
+          <PasswordInput
             id="password-confirm"
             name="password_confirm"
-            type="password"
             autoComplete="new-password"
             minLength={8}
             maxLength={128}
+            visibilityLabel="password confirmation"
             required
           />
           <label className="auth-legal-consent" htmlFor="terms-accepted">

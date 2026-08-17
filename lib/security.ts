@@ -1,5 +1,40 @@
 import { errorResponse } from "./api";
+import { isLocalHostname, requestUsesHttps } from "./identity";
 import { publicAppOrigin } from "./runtime-flags";
+
+function routedLocalOrigin(request: Request): string | null {
+  const authority = request.headers.get("host")?.trim();
+  if (!authority) return null;
+  const protocol = requestUsesHttps(request) ? "https:" : "http:";
+  try {
+    const routed = new URL(`${protocol}//${authority}`);
+    if (
+      !isLocalHostname(routed.hostname) ||
+      routed.username ||
+      routed.password ||
+      routed.pathname !== "/" ||
+      routed.search ||
+      routed.hash
+    ) {
+      return null;
+    }
+    return routed.origin;
+  } catch {
+    return null;
+  }
+}
+
+function requestOriginIsAllowed(request: Request, origin: string): boolean {
+  const receivedOrigin = new URL(origin).origin;
+  const configuredOrigin = publicAppOrigin();
+  if (configuredOrigin) return receivedOrigin === configuredOrigin;
+  if (receivedOrigin === new URL(request.url).origin) return true;
+
+  // Next can expose 0.0.0.0 or an internal placeholder in Request.url during
+  // local development. The browser-visible Host is accepted only when it is
+  // an exact loopback origin, including protocol and port.
+  return receivedOrigin === routedLocalOrigin(request);
+}
 
 export function mutationGuard(request: Request): Response | null {
   const fetchSite = request.headers.get("sec-fetch-site")?.toLowerCase();
@@ -18,8 +53,7 @@ export function mutationGuard(request: Request): Response | null {
       // Node service receives an internal request.  Compare browser mutations
       // with the explicitly configured canonical origin rather than relying on
       // that internal URL.
-      const expectedOrigin = publicAppOrigin() ?? new URL(request.url).origin;
-      if (new URL(origin).origin !== expectedOrigin) {
+      if (!requestOriginIsAllowed(request, origin)) {
         return errorResponse(
           "CSRF_REJECTED",
           "This update was rejected because it did not originate from WageShield.",

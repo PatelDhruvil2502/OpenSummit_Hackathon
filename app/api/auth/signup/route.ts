@@ -4,6 +4,7 @@ import {
   createSession,
   isAuthLocked,
   recordAuthAttempt,
+  signupEmailIsAllowed,
 } from "@/lib/accounts";
 import { requestUsesHttps, safeRelativeReturnPath } from "@/lib/identity";
 import { mutationGuard, parseFormDataBody } from "@/lib/security";
@@ -49,6 +50,10 @@ export async function POST(request: Request) {
   if (!parsed.success) {
     await recordAuthAttempt(request, "signup", email);
     return redirect(`/signup?error=invalid&return_to=${encodeURIComponent(returnTo)}`);
+  }
+  if (!signupEmailIsAllowed(parsed.data.email)) {
+    await recordAuthAttempt(request, "signup", parsed.data.email);
+    return redirect(`/signup?error=not_invited&return_to=${encodeURIComponent(returnTo)}`);
   }
 
   const created = await createAccount(
