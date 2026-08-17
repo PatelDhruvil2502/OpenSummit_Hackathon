@@ -785,7 +785,7 @@ function AiDocumentRun({ run, documentName }: { run: AiDocumentExtraction; docum
           <div><dt>Abstained</dt><dd>{run.abstentionCount}</dd></div>
         </dl>
       )}
-      {run.deterministicFallbackUsed && (
+      {run.deterministicFallbackUsed && !["VERIFIED", "PARTIAL"].includes(run.status) && (
         <p className="ai-fallback-note"><ShieldCheck size={14} aria-hidden="true" /> Local extraction also ran; AI output did not bypass review.</p>
       )}
       {run.warnings.length > 0 && (
