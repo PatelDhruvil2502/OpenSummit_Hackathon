@@ -1,0 +1,15 @@
+# WageShield is a Node.js application. It has no Python package dependencies,
+# so `pip install -r requirements.txt` is intentionally a no-op.
+#
+# Required software:
+# - Node.js 22.13.0 or newer (includes npm)
+# - PostgreSQL 17 or 18
+#
+# JavaScript dependencies are locked in package-lock.json. Install and start:
+# 1. npm ci
+# 2. cp .env.example .env.local
+# 3. Set DATABASE_URL and the other local values in .env.local
+# 4. npm run db:migrate
+# 5. npm run dev
+#
+# See README.md for local database setup and DEPLOYMENT.md for Render deployment.
