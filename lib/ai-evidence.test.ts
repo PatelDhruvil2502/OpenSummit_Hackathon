@@ -323,6 +323,65 @@ test("deterministically canonicalizes a supported pay-frequency display value", 
   assert.equal(result.schemaRetryUsed, false);
 });
 
+test("canonicalizes equivalent pay-frequency wording when the visible value agrees", async () => {
+  const frequencyInput: AiEvidencePreparedInput = {
+    ...preparedInput,
+    pages: [{
+      ...preparedInput.pages[0],
+      text: `${preparedInput.pages[0].text}\nPay frequency: Semi-monthly`,
+    }],
+  };
+  const displayedFrequency = extractionOutput();
+  displayedFrequency.facts[0] = {
+    candidate_id: "fact_frequency",
+    type: "PAY_FREQUENCY",
+    label: "Pay frequency",
+    raw_value: "Pay frequency: Semi-monthly",
+    normalized_value: "Paid on a twice-monthly schedule",
+    confidence: 0.88,
+    evidence: {
+      page: 1,
+      exact_excerpt: "Pay frequency: Semi-monthly",
+    },
+    uncertainty: "",
+  };
+  const verification = verifierOutput();
+  verification.decisions[0].candidate_id = "fact_frequency";
+  verification.decisions[0].exact_excerpt = "Pay frequency: Semi-monthly";
+  const responses = [providerResponse(displayedFrequency), providerResponse(verification)];
+  const result = await executeAiEvidenceCopilot(frequencyInput, runtime, {
+    fetchImpl: async () => responses.shift() as Response,
+  });
+  assert.equal(result.facts[0]?.normalized_value, "SEMI-MONTHLY");
+  assert.equal(result.valueNormalizationUsed, true);
+});
+
+test("rejects pay-frequency normalization when the visible and normalized values disagree", async () => {
+  const mismatched = extractionOutput();
+  mismatched.facts[0] = {
+    candidate_id: "fact_frequency",
+    type: "PAY_FREQUENCY",
+    label: "Pay frequency",
+    raw_value: "Pay frequency: Weekly",
+    normalized_value: "semi_monthly",
+    confidence: 0.88,
+    evidence: {
+      page: 1,
+      exact_excerpt: "Rate of Pay: $120,000.00 Per Year",
+    },
+    uncertainty: "",
+  };
+  await assert.rejects(
+    executeAiEvidenceCopilot(preparedInput, runtime, {
+      fetchImpl: async () => providerResponse(mismatched),
+    }),
+    (error: unknown) =>
+      error instanceof AiEvidenceCopilotError &&
+      error.code === "AI_EXTRACTION_SCHEMA_INVALID" &&
+      error.diagnostics.some((issue) => issue.includes("pay_frequency_format")),
+  );
+});
+
 test("rejects annual-wage normalization that disagrees with the visible raw value", async () => {
   const mismatched = extractionOutput();
   mismatched.facts[0].normalized_value = "$130,000.00 per year";

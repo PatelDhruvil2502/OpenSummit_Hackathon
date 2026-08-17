@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { AiEvidencePreparedInput } from "./ai-evidence-input";
 import { parseDollarsToCents } from "./money";
 
-export const AI_EVIDENCE_PROMPT_VERSION = "wageshield-evidence-extraction-v4";
+export const AI_EVIDENCE_PROMPT_VERSION = "wageshield-evidence-extraction-v5";
 export const AI_EVIDENCE_VERIFIER_PROMPT_VERSION = "wageshield-evidence-grounding-v1";
 
 const MAX_CANDIDATES = 60;
@@ -297,7 +297,14 @@ function schemaIssueSignatures(error: z.ZodError): string[] {
     const path = issue.path
       .map((segment) => (typeof segment === "number" ? "[]" : segment))
       .join(".");
-    return `${path || "$"}:${issue.code}`;
+    const customCategory = issue.code === "custom"
+      ? {
+          "Annual wages must be normalized to integer cents": "annual_wage_format",
+          "Annual wage cents must agree with the visible raw value": "annual_wage_mismatch",
+          "Unsupported pay frequency": "pay_frequency_format",
+        }[issue.message]
+      : undefined;
+    return `${path || "$"}:${issue.code}${customCategory ? `:${customCategory}` : ""}`;
   });
   return [...new Set(signatures)].slice(0, 12);
 }
@@ -315,13 +322,27 @@ function annualDollarsToCents(value: string): number | null {
 }
 
 function canonicalPayFrequency(value: string): string | null {
-  const compact = value.trim().toUpperCase().replace(/[\s_-]+/g, "");
+  let compact = value.normalize("NFKC").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "");
+  compact = compact
+    .replace(/^(?:(?:PAYMENT|PAY)?FREQUENCY(?:IS|OF)?|PAYCYCLE|PAID(?:ON(?:AN|A)?|AS)?)*/, "")
+    .replace(/(?:(?:PAYMENT|PAY)?FREQUENCY|PAYCYCLE|PAYSCHEDULE|SCHEDULE|PAYMENTS?|PAY)$/, "");
   const supported: Record<string, string> = {
     WEEKLY: "WEEKLY",
+    EVERYWEEK: "WEEKLY",
     BIWEEKLY: "BIWEEKLY",
+    EVERYTWOWEEKS: "BIWEEKLY",
+    EVERY2WEEKS: "BIWEEKLY",
     SEMIMONTHLY: "SEMI-MONTHLY",
+    TWICEMONTHLY: "SEMI-MONTHLY",
+    TWICEAMONTH: "SEMI-MONTHLY",
+    TWICEPERMONTH: "SEMI-MONTHLY",
+    TWOTIMESPERMONTH: "SEMI-MONTHLY",
     MONTHLY: "MONTHLY",
+    ONCEAMONTH: "MONTHLY",
     ANNUAL: "ANNUAL",
+    ANNUALLY: "ANNUAL",
+    YEARLY: "ANNUAL",
+    ONCEAYEAR: "ANNUAL",
   };
   return supported[compact] ?? null;
 }
