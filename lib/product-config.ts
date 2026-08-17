@@ -35,7 +35,7 @@ export const RETENTION_POLICY = {
     { hours: 72, label: "3 days" },
     { hours: 168, label: "7 days" },
   ] as ReadonlyArray<{ hours: number; label: string }>,
-  /** Cron cadence configured in `vite.config.ts` for the retention sweeper. */
+  /** Cron cadence configured in `render.yaml` for the retention sweeper. */
   sweepCron: "*/15 * * * *",
 } as const;
 

@@ -22,7 +22,9 @@ export async function GET(request: Request, context: Context) {
     const result = await getDocumentBytes(caseId, documentId, identity.user.userId);
     if (!result) return notFound();
     const headers = privateResponseHeaders();
-    result.object.writeHttpMetadata(headers);
+    headers.set("Content-Type", result.object.contentType);
+    headers.set("Content-Length", String(result.object.size));
+    headers.set("ETag", result.object.etag);
     headers.set("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(result.name)}`);
     headers.set("Content-Security-Policy", "sandbox");
     headers.set("X-Content-Type-Options", "nosniff");

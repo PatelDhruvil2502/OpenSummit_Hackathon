@@ -37,7 +37,7 @@ const SECTIONS: Array<{ heading: string; body: string[] }> = [
   {
     heading: "4. Accounts and termination",
     body: [
-      "You need an account to create reviews. You may delete any review at any time from its Privacy tab, and deletion is verified before it reports success.",
+      "You need an account to create reviews. You may delete any review at any time from its Privacy tab, and removal from the live service is verified before it reports success. Render's paid PostgreSQL recovery system can retain a prior database state for up to three days on this Hobby workspace; those recovery copies are not served by WageShield and must not be used to reintroduce deleted records.",
       `We may suspend or terminate an account that violates these terms, that we are legally required to act on, or that is being used to attack the service. Where circumstances permit, we will give notice to the account email first.`,
       "You may stop using the service at any time. Deleting your reviews removes the underlying records as described in the privacy policy.",
     ],
@@ -100,7 +100,7 @@ export default function TermsPage() {
         {placeholders && (
           <p className="form-error" role="alert">
             This deployment still uses placeholder company details. Set the operating entity,
-            jurisdiction, and contact addresses in <code>lib/company.ts</code> before launch.
+            jurisdiction, and contact-address environment values in Render before launch.
           </p>
         )}
       </section>

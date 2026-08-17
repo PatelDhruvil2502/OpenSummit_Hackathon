@@ -100,7 +100,7 @@ test("successful signin clears the email limiter without clearing the shared net
 
   const failed = await client.request("/api/auth/signin", {
     method: "POST",
-    headers: { "cf-connecting-ip": "203.0.113.44" },
+    headers: { "x-forwarded-for": "203.0.113.44, 198.51.100.7" },
     body: new URLSearchParams({
       email,
       password: "incorrect-password",
@@ -118,10 +118,11 @@ test("successful signin clears the email limiter without clearing the shared net
   assert.ok(newBuckets.some((row) => row.bucket === emailBucket));
   const networkBuckets = newBuckets.filter((row) => row.bucket !== emailBucket);
   assert.equal(networkBuckets.length, 1);
+  assert.equal(networkBuckets[0].bucket, await authBucket("signin:ip:203.0.113.44"));
 
   const signedIn = await client.request("/api/auth/signin", {
     method: "POST",
-    headers: { "cf-connecting-ip": "203.0.113.44" },
+    headers: { "x-forwarded-for": "203.0.113.44, 198.51.100.7" },
     body: new URLSearchParams({
       email,
       password: "correct-horse-battery",
@@ -206,6 +207,14 @@ test("local account deletion requires reauthentication and removes cases and obj
     .first();
   assert.equal(account, null);
   assert.equal(deletedCase, null);
+  await assert.rejects(
+    harness.DB.prepare(
+      "INSERT INTO audit_events (id, case_id, event_type, safe_metadata_json, created_at) VALUES (?, ?, ?, ?, ?)",
+    )
+      .bind(crypto.randomUUID(), review.id, "LATE_EVENT", "{}", new Date().toISOString())
+      .run(),
+    (error) => error?.code === "23503",
+  );
   assert.equal((await client.request("/api/v1/cases")).status, 401);
 });
 
@@ -221,4 +230,44 @@ test("trusted-gateway identities receive a clear provider-managed response", asy
   });
   const error = await expectJsonError(response, 409, "INVALID_REQUEST");
   assert.match(error.message, /managed by the trusted sign-in provider|re-authenticate/i);
+});
+
+test("private-beta accounts cannot change to an uninvited email address", async () => {
+  const privateHarness = await createWorkerHarness("account-allowlist", {
+    investorEmailAllowlist: "invited@example.test",
+    allowPublicSignup: false,
+  });
+  try {
+    const client = privateHarness.client(null, { origin: "http://localhost" });
+    const signup = await client.request("/api/auth/signup", {
+      method: "POST",
+      body: new URLSearchParams({
+        email: "invited@example.test",
+        full_name: "Invited Investor",
+        password: "correct-horse-battery",
+        password_confirm: "correct-horse-battery",
+        terms_accepted: "1",
+        return_to: "/account",
+      }),
+    });
+    assert.equal(signup.status, 303);
+
+    const update = await client.request("/api/auth/profile", {
+      method: "POST",
+      body: new URLSearchParams({
+        email: "outsider@example.test",
+        full_name: "Invited Investor",
+        current_password: "correct-horse-battery",
+        new_password: "",
+        new_password_confirm: "",
+      }),
+    });
+    assert.equal(update.status, 303);
+    assert.equal(update.headers.get("location"), "/account?error=invalid");
+
+    const row = await privateHarness.DB.prepare("SELECT email FROM accounts LIMIT 1").first();
+    assert.equal(row.email, "invited@example.test");
+  } finally {
+    await privateHarness.dispose();
+  }
 });

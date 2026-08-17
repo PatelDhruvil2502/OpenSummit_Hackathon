@@ -3,12 +3,14 @@
 import type { FormEvent } from "react";
 import { useState } from "react";
 import { Download, LoaderCircle, Trash2 } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 interface ErrorPayload {
   error?: { message?: string };
 }
 
 export function AccountDataControls({ canDelete }: { canDelete: boolean }) {
+  const router = useRouter();
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState("");
 
@@ -35,7 +37,8 @@ export function AccountDataControls({ canDelete }: { canDelete: boolean }) {
         setError(payload.error?.message ?? "Account deletion could not be completed.");
         return;
       }
-      window.location.assign("/?account_deleted=1");
+      router.replace("/?account_deleted=1");
+      router.refresh();
     } catch {
       setError("Account deletion could not be completed. Check your connection and retry.");
     } finally {
@@ -61,9 +64,10 @@ export function AccountDataControls({ canDelete }: { canDelete: boolean }) {
         <form className="account-delete-form" onSubmit={deleteAccount}>
           <h3>Delete account permanently</h3>
           <p id="account-delete-help">
-            This verifies deletion of retained review objects, removes the local account, and
-            signs out every session. An opaque deletion lock remains to prevent stale requests
-            from recreating data.
+            This verifies removal of retained review objects from the live service, removes the
+            local account, and signs out every session. An opaque deletion lock remains to prevent
+            stale requests from recreating data. Processor recovery copies age out under the
+            backup window disclosed in the Privacy policy.
           </p>
           <label htmlFor="delete-current-password">Current password</label>
           <input

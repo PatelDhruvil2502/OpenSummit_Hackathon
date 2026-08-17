@@ -82,7 +82,7 @@ export function SandboxCases({
     if (!signedIn) {
       const destination = new URL(signInPath || "/signin", window.location.origin);
       destination.searchParams.set("return_to", `/sandbox?scenario=${scenario}`);
-      window.location.assign(`${destination.pathname}${destination.search}${destination.hash}`);
+      router.push(`${destination.pathname}${destination.search}${destination.hash}`);
       return;
     }
     if (!acknowledged) {

@@ -1,263 +1,273 @@
-# Deployment and launch runbook
+# Render deployment and investor-demo runbook
 
-This runbook leaves no application model to download and no hidden backend to provision. WageShield is one Cloudflare-compatible Worker with a D1 binding named `DB`, a private R2 binding named `BUCKET`, and a 15-minute scheduled retention handler. Resend is the only external API.
+WageShield deploys as a standard Next.js Node service. The production stack is:
 
-The recommended first release is a **private OpenAI Sites deployment** or an equivalently access-controlled Cloudflare private beta. A broadly available demo must remain synthetic-only until the production gates in [SECURITY.md](SECURITY.md) are complete.
+```text
+Render Web Service (Next.js UI + API)
+├── Render PostgreSQL (structured state + private document/report bytes)
+├── Resend (password-reset email)
+└── Render Cron Job (15-minute expiry/deletion sweep)
+```
 
-## 1. Requirements
+Cloudflare is not part of this deployment. No AI API key, model weights, OCR
+service, vector database, GPU, or background queue is required.
 
-- Node.js 22.13 or newer and npm.
-- A clean install from the committed `package-lock.json`.
-- One deployment target:
-  - OpenAI Sites, which owns the Cloudflare resource wiring; or
-  - a Cloudflare account with Workers, D1, R2, and Cron Triggers enabled.
-- For a direct private beta, use Workers Paid. The Free plan's 10 ms CPU limit is
-  too small to rely on for SSR, password hashing, and PDF parsing; Workers Paid
-  starts at $5 per account per month.
-- A valid Cloudflare billing profile is required to activate the R2 subscription
-  and Zero Trust onboarding, even when usage remains inside their free allowances.
-- A domain you control and a verified Resend sending domain for production account recovery.
-- A registered operating entity, governing jurisdiction, and monitored support/privacy/security mailboxes.
+The checked-in [`render.yaml`](render.yaml) provisions the Render resources and
+wires their private connection values. Do not create separate Render services
+manually unless the Blueprint cannot be used.
 
-No OpenAI API key, model weights, vector database, OCR service, GPU, or background queue is required. Do not add one merely to launch this version.
+## 1. Before you deploy
 
-## 2. Configuration contract
+You need:
 
-### Storage bindings
+- the repository pushed to a GitHub, GitLab, or Bitbucket branch;
+- a Render account with the promotional credit applied;
+- a Resend API key and verified sender domain for password recovery;
+- the exact investor email addresses that may register;
+- real company, jurisdiction, support, privacy, and security details for the
+  served policy pages; and
+- Node.js 22.13 or newer for local verification.
 
-| Binding | Backing service | Required | Purpose |
-| --- | --- | --- | --- |
-| `DB` | Cloudflare D1 | Yes | Accounts, sessions, cases, reviewed facts, indexes, manifests, throttles, and deletion records |
-| `BUCKET` | Private Cloudflare R2 | Yes | Uploaded source documents and generated report PDFs |
+Apply the Render promotion before provisioning anything:
 
-OpenAI Sites reads the logical names from `.openai/hosting.json`. Direct Cloudflare builds read the real names/ID from the `CLOUDFLARE_*` variables below. D1 and R2 bindings are credentials supplied by the platform; the application does not need access-key strings for them.
+1. Open the [Render Dashboard](https://dashboard.render.com/) and select the
+   workspace that will own this deployment.
+2. Open **Billing → Credit Balance**.
+3. Choose **Enter promo code**, paste the code exactly, and select **Apply**.
+4. Confirm the credit **total**, **remaining balance**, and **valid-until** date
+   before creating resources.
 
-### Runtime values and secrets
+Promo eligibility and expiry are issuer-specific. Render credit offsets eligible
+future invoice usage; it is not cash and cannot be withdrawn. Paid resources can
+still require a valid payment method or temporary authorization hold. If the
+promo field is absent or the code is rejected, use the issuer's redemption link
+or contact Render support before deploying—do not create paid resources first.
 
-| Name | Production status | Secret? | Notes |
-| --- | --- | --- | --- |
-| `RESEND_API_KEY` | Required | Yes | Account-recovery email; the only third-party API key |
-| `EMAIL_FROM` | Required | Treat as configuration | Verified sender, e.g. `WageShield <no-reply@your-domain>` |
-| `EMAIL_REPLY_TO` | Recommended | No | Monitored support address |
-| `PUBLIC_APP_URL` | Required | No | Exact canonical HTTPS origin, without a path, query, credentials, or fragment |
-| `TRUST_FORWARDED_IDENTITY` | Target-specific | No | `true` for OpenAI Sites; absent/`false` for an ordinary direct Worker |
-| `ENABLE_SANDBOX` | Optional | No | Keep absent/`false` for a real-record private beta; `true` exposes fictional fixtures |
-| `NEXT_PUBLIC_COMPANY_LEGAL_NAME` | Required | No | Registered operating entity; must not contain “pending” |
-| `NEXT_PUBLIC_COMPANY_JURISDICTION` | Required | No | Counsel-approved governing law/venue |
-| `NEXT_PUBLIC_SUPPORT_EMAIL` | Required | No | Must not use `.example` |
-| `NEXT_PUBLIC_PRIVACY_EMAIL` | Required | No | Must not use `.example` |
-| `NEXT_PUBLIC_SECURITY_EMAIL` | Required | No | Must not use `.example` |
+The Blueprint intentionally selects an always-on `starter` web service, a
+`basic-256mb` PostgreSQL instance with 5 GB of disk, and a `starter` cron job.
+Those are paid resources, but a valid $50 credit should cover a low-traffic
+one-to-two-week demonstration. Credit coverage is not guaranteed: Render usage
+beyond the balance, eligibility, or expiry can be charged. Check **Billing →
+Unbilled Usage** and the remaining credit daily, then delete the resources after
+the demo.
 
-`TRUST_FORWARDED_IDENTITY=true` is a security assertion, not a convenience flag. Set it only when the Worker is behind a gateway proven to remove client-supplied `oai-authenticated-user-*` headers and inject authenticated values. OpenAI Sites supplies that boundary. A directly reachable Worker does not; its users should use the built-in account flow.
+Official references:
 
-### Direct-build values
+- [Render Blueprints](https://render.com/docs/infrastructure-as-code)
+- [Render Blueprint fields](https://render.com/docs/blueprint-spec)
+- [Render Next.js deployment](https://render.com/docs/deploy-nextjs-app)
+- [Render Cron Jobs](https://render.com/docs/cronjobs)
+- [Render Terms of Service](https://render.com/terms)
+- [Resend domain verification](https://resend.com/docs/dashboard/domains/introduction)
 
-These select the real resources written into `dist/server/wrangler.json`. OpenAI Sites does not need them.
-
-| Name | Required for direct deploy | Example |
-| --- | --- | --- |
-| `CLOUDFLARE_WORKER_NAME` | Yes | `wageshield-h1b` |
-| `CLOUDFLARE_D1_DATABASE_NAME` | Yes | `wageshield-production` |
-| `CLOUDFLARE_D1_DATABASE_ID` | Yes | UUID returned by `wrangler d1 create` |
-| `CLOUDFLARE_R2_BUCKET_NAME` | Yes | `wageshield-private-documents` |
-| `CLOUDFLARE_RETENTION_CRON` | Recommended | `*/15 * * * *` |
-
-Use `.env.example` for sanitized build configuration and `.dev.vars.example` for the local Worker runtime contract. Real `.env*` and `.dev.vars*` files are ignored by Git.
-
-## 3. Validate the exact release
+## 2. Validate the release locally
 
 From the repository root:
 
 ```bash
 npm ci
 npm run preflight
-```
-
-`preflight` performs lint, TypeScript checks, Drizzle journal validation, an in-memory fresh migration, an upgrade from the shipped `0000`–`0005` chain with data-preservation assertions, unit tests, a deployment build, and every `tests/*.test.mjs` integration suite.
-
-Also run a dependency review before each release:
-
-```bash
 npm audit --omit=dev
 ```
 
-Treat a failing check or unresolved production vulnerability as a release blocker. Do not run `npm audit fix --force` against a release branch without reviewing the resulting dependency and behavior changes.
+Every command must pass on the exact commit you deploy. Do not use
+`npm audit fix --force` on the release branch without reviewing and retesting
+the dependency changes.
 
-## 4A. Recommended: OpenAI Sites
+For local application testing, copy `.env.example` to `.env.local`, replace the
+placeholders, point `DATABASE_URL` at a PostgreSQL database you control, then:
 
-1. Keep `.openai/hosting.json` limited to the logical resource declarations:
+```bash
+npm run db:migrate
+npm run dev
+```
 
-   ```json
-   {
-     "d1": "DB",
-     "r2": "BUCKET"
-   }
+Open <http://localhost:3000>. PostgreSQL stores both structured state and private
+document/report bytes, so no separate object-storage account or key is needed.
+The checked-in production settings cap private objects at 3 GiB globally and
+1.5 GiB per account, preserving disk headroom for tables and PostgreSQL's
+write-ahead log. These are byte-count configuration values, not secrets.
+Resend may be left unconfigured only for local development; localhost returns
+the reset link through its development flow. Never upload real records to a
+developer machine or shared test database.
+
+## 3. Configure Resend
+
+1. Add a domain or subdomain you control to Resend.
+2. Add the DNS records Resend provides and wait until verification succeeds.
+3. Create a sending API key dedicated to this investor demo.
+4. Save the key as `RESEND_API_KEY` in a password manager.
+5. Choose a verified sender value such as:
+
+   ```text
+   WageShield <account@updates.yourdomain.com>
    ```
+6. Choose a monitored, reply-capable address for `EMAIL_REPLY_TO`. It may be the
+   same address used for `NEXT_PUBLIC_SUPPORT_EMAIL`.
 
-   On first publication, Sites adds its own `project_id`. Do not invent a Cloudflare database ID or bucket name in this file.
+Without a verified sender domain, Resend's test sender is not suitable for
+password-reset messages to arbitrary investor addresses. If you intentionally
+skip Resend, account recovery is not launch-ready.
 
-2. Use the Sites publish flow in Codex and choose a **private** deployment. Sites creates/wires the real D1 and R2 resources and packages the checked-in `drizzle/` migrations with the validated build.
+## 4. Create the Render Blueprint
 
-3. In Sites runtime configuration, set the company/contact values, `RESEND_API_KEY`, `EMAIL_FROM`, optional `EMAIL_REPLY_TO`, and `PUBLIC_APP_URL`. Set `TRUST_FORWARDED_IDENTITY=true` only for this Sites-hosted version.
+1. Sign in to [Render](https://dashboard.render.com).
+2. Choose the workspace that contains the promotional credit.
+3. Select **New → Blueprint**.
+4. Connect the Git provider and choose this repository.
+5. Choose the release branch (normally `main`).
+6. Confirm the Blueprint path is `render.yaml`.
+7. Review the proposed resources before applying:
 
-4. If `PUBLIC_APP_URL` was unknown until the Site was created, set it to the exact assigned HTTPS origin and publish a new version before testing password recovery.
+   | Resource | Expected configuration |
+   | --- | --- |
+   | `wageshield-demo` | Node web service, Ohio, Starter |
+   | `wageshield-db` | PostgreSQL 18, Ohio, Basic 256 MB, 5 GB disk |
+   | `wageshield-retention` | Node cron, Ohio, every 15 minutes |
 
-5. Keep access private during verification. Promote access only after every smoke test below passes and the legal/privacy/security launch checklist is signed off.
+8. Enter every value Render prompts for. These correspond to `sync: false` in
+   the Blueprint:
 
-Sites deployment must contain:
+   | Variable | Value |
+   | --- | --- |
+   | `RESEND_API_KEY` | Dedicated Resend key |
+   | `EMAIL_FROM` | Verified sender string |
+   | `EMAIL_REPLY_TO` | Monitored reply-capable address |
+   | `INVESTOR_EMAIL_ALLOWLIST` | Comma-separated exact approved emails |
+   | `NEXT_PUBLIC_COMPANY_LEGAL_NAME` | Real operating entity |
+   | `NEXT_PUBLIC_COMPANY_JURISDICTION` | Counsel-approved jurisdiction/venue |
+   | `NEXT_PUBLIC_SUPPORT_EMAIL` | Monitored support address |
+   | `NEXT_PUBLIC_PRIVACY_EMAIL` | Monitored privacy address |
+   | `NEXT_PUBLIC_SECURITY_EMAIL` | Monitored security address |
 
-- `dist/server/index.js`;
-- emitted static assets;
-- `dist/.openai/hosting.json`; and
-- `dist/.openai/drizzle/**` with the complete append-only migration chain.
+9. Apply the Blueprint and watch all three resource logs.
 
-The Sites packaging flow validates these artifacts. A private URL is not evidence by itself that migrations, email, or retention are healthy; verify them below.
+The Blueprint automatically supplies `DATABASE_URL` from the private Render
+PostgreSQL connection to both services. It keeps `ENABLE_SANDBOX=false` and
+`TRUST_FORWARDED_IDENTITY=false` for the real-record investor deployment. It
+also keeps `ALLOW_PUBLIC_SIGNUP=false`, so registration fails closed unless the
+normalized email exactly matches `INVESTOR_EMAIL_ALLOWLIST`. Never leave the
+allowlist blank for the demo.
 
-## 4B. Direct Cloudflare deployment
+Render automatically supplies `RENDER_EXTERNAL_URL`, so the first deployment
+can create safe password-reset links without knowing the `onrender.com` hostname
+in advance. If you later attach a custom domain, set `PUBLIC_APP_URL` on the web
+service to that exact HTTPS origin and redeploy.
 
-### Create resources once
+## 5. What Render runs
 
-Activate R2 first in **Cloudflare Dashboard → Storage & databases → R2 →
-Overview** and complete its subscription checkout. Choose Standard storage so
-the monthly R2 free allowance applies. Then authenticate Wrangler, verify the
-selected account, and create one production database and one private bucket:
+The Web Service uses:
 
-```bash
-npx wrangler login
-npx wrangler whoami
-npx wrangler d1 create wageshield-production
-npx wrangler d1 info wageshield-production
-npx wrangler r2 bucket create wageshield-private-documents
-npx wrangler r2 bucket list
+```text
+Build:      npm ci --include=dev && npm run build
+Pre-deploy: npm run db:migrate
+Start:      npm start
+Health:     /api/v1/live
 ```
 
-Copy the returned D1 UUID and the selected names into an ignored `.env.local` based on `.env.example`. Never commit the UUID together with secrets, and never use the all-zero placeholder for a deployment. The binding values are read from `process.env` while Vite evaluates its configuration, so export the file into the build shell rather than assuming Vite will load it later.
+`npm start` binds Next.js to `0.0.0.0` and Render's `$PORT`. The pre-deploy
+command applies the append-only PostgreSQL migrations before the new application
+version receives traffic.
 
-### Build against the real bindings
+The Cron Job uses:
 
-```bash
-set -a
-source .env.local
-set +a
-npm run preflight
-npm run build
+```text
+Schedule: */15 * * * *
+Command:  npm run retention:sweep
 ```
 
-Inspect `dist/server/wrangler.json` before continuing. It must contain:
+Render cron schedules use UTC. The command deletes expired sessions,
+password-reset state, idempotency records, cases, source files, and reports. It
+exits nonzero when verified case deletion fails so the failed run is visible.
 
-- the intended Worker name;
-- D1 binding `DB`, the real database name, and a non-placeholder UUID;
-- R2 binding `BUCKET` and the intended private bucket;
-- `migrations_dir` resolving to the repository `drizzle/` directory;
-- cron `*/15 * * * *` (or an explicitly reviewed equivalent);
-- `keep_vars: true`; and
-- the `nodejs_compat` compatibility flag.
+## 6. First-deployment checks
 
-If `00000000-0000-4000-8000-000000000000` appears, stop: Vite did not load the intended environment file.
+Wait for the database migration, web deploy, and first liveness check to finish.
+Render's `/api/v1/live` probe performs only a process-liveness response. Then perform
+the operator-facing deep readiness check by opening:
 
-### Apply migrations before application code
-
-Check the append-only chain. D1 Time Travel is automatic; confirm its retention
-for the selected plan, then apply the migrations to the remote binding:
-
-```bash
-npm run db:check
-npm run db:validate
-npx wrangler d1 migrations apply DB --remote --config dist/server/wrangler.json
+```text
+https://<service>.onrender.com/api/v1/health
 ```
 
-Review the migration list Wrangler shows before confirming. Never rename, edit, consolidate, or delete an already-applied migration. New schema work is generated as the next numbered file and must pass both migration paths before deployment.
+The deep endpoint checks PostgreSQL schema, queries, and private-byte storage. It
+must return HTTP 200 with:
 
-### Deploy and configure runtime values
+- `status: "ok"`;
+- database and object dependencies healthy;
+- `password_email_configured: true`;
+- `public_app_url_configured: true`;
+- `company_details_configured: true`;
+- `signup_access_configured: true`; and
+- `launch_ready: true`.
 
-```bash
-npx wrangler deploy --config dist/server/wrangler.json
-```
+If it does not, inspect the web-service log and correct the configuration before
+sharing the URL. Never print or paste secret values into logs or support chats.
 
-Use **Workers & Pages → WageShield worker → Settings → Variables and Secrets**
-to configure `RESEND_API_KEY` as a Secret. Alternatively, target the generated
-configuration explicitly:
+## 7. Production smoke test
 
-```bash
-npx wrangler secret put RESEND_API_KEY --config dist/server/wrangler.json
-npx wrangler secret list --config dist/server/wrangler.json
-```
+Use two allowlisted accounts and test documents you are authorized to possess.
+Generated synthetic documents are safer for the first pass.
 
-Put `PUBLIC_APP_URL`, sender settings, and company/contact values in the
-Worker's runtime variables. `keep_vars: true` prevents later application
-deploys from silently erasing dashboard-managed text variables.
+1. Load the homepage, methodology, privacy, terms, and security pages.
+2. Verify an allowlisted address can register and a non-allowlisted address
+   cannot.
+3. Sign out, sign in, request password recovery, and complete one reset. Confirm
+   the old password and reused reset link fail and existing sessions are revoked.
+4. Create a blank case and upload a searchable PDF. Verify invalid type, size,
+   and structure paths are rejected safely.
+5. Confirm parsed candidates remain `NEEDS_REVIEW`, review the evidence, and run
+   the deterministic analysis.
+6. Correct a fact, rerun analysis, select findings, apply redactions, generate a
+   report, download it, fetch its manifest, and verify the SHA-256 value.
+7. From the second account, request the first account's case, document, report,
+   manifest, corrections, and deletion routes. Every request must receive the
+   same missing-resource response used for a nonexistent case.
+8. Export the account and verify it contains no password hash, token, private
+   object URL/key, or another account's content.
+9. Delete a document and a case; prove their original and generated files are no
+   longer downloadable.
+10. In Render, open `wageshield-retention`, select **Trigger Run**, and confirm a
+    successful `retention_sweep_complete` event without private identifiers.
+11. Restart/redeploy the Web Service and confirm the account, remaining case,
+    documents, and reports persist.
+12. Inspect Render and Resend logs/events. They must not contain raw
+    documents, evidence excerpts, passwords, reset tokens, session cookies, or
+    API tokens.
 
-The first deployment may be needed to learn the `workers.dev` origin. Set that exact HTTPS origin—or preferably the final custom-domain origin—as `PUBLIC_APP_URL` before account-recovery testing. Verify the Resend domain and its SPF/DKIM/DMARC configuration.
+Do not present the deployment to investors until this entire test passes on the
+exact public URL.
 
-Keep `TRUST_FORWARDED_IDENTITY` absent or `false`. If a future gateway supplies forwarded identity, first disable/bypass-proof the direct origin, restrict routes to the gateway, prove client headers are stripped, and only then enable the flag. A custom domain alone is not a sanitizing identity gateway.
+## 8. During and after the demo
 
-Confirm the Cron Trigger is visible in the deployed Worker's settings and alert on scheduled-handler exceptions. The handler purges expired sessions and expired cases; if verified object deletion fails, it throws so monitoring can detect the failure.
+Before each meeting, check:
 
-### Restrict the investor deployment
+- the Render Web Service and database are healthy;
+- the latest retention run succeeded;
+- Render credit and unbilled usage remain within the promotion;
+- PostgreSQL disk usage is below its limit; and
+- Resend shows no delivery failure for the invited addresses.
 
-1. Complete Cloudflare Zero Trust onboarding on its Free plan.
-2. In **Zero Trust → Integrations → Identity providers**, enable One-time PIN.
-3. Create an Access Allow policy whose Include selector is **Emails**, listing
-   each exact founder/investor address. Do not use One-time PIN as the only
-   Include rule; that would allow any valid email address.
-4. Open **Workers & Pages → WageShield worker → Access**, select **Protect this
-   Worker behind Access**, choose **All traffic**, and apply the exact-email
-   policy. This protects the `workers.dev` hostname and preview routes together.
-5. Keep `TRUST_FORWARDED_IDENTITY=false`. Access is the outer gate; the
-   application continues to use its own account authorization inside it.
+Keep preview environments disabled, run one web instance, and do not add paid
+services without reviewing the cost. The Blueprint already disables previews.
+Because uploaded documents and reports share the 5 GB PostgreSQL disk with
+application data and write-ahead logs, investigate growth early rather than
+waiting for the disk to fill.
 
-Cron expressions run in UTC and a trigger update can take up to 15 minutes to
-propagate. Verify `*/15 * * * *` under **Settings → Triggers → Cron Triggers**
-and inspect Trigger Events after a test execution.
+After the one-to-two-week demonstration:
 
-## 5. Deployment smoke test
+1. Delete all cases and accounts through the application.
+2. Manually run the retention job and verify private document/report rows are gone.
+3. Delete the Render cron and web service.
+4. Delete the Render database only after completing any legally required export
+   and confirming deletion.
+5. Revoke the Resend API key.
+6. Confirm no active Render resource or unbilled usage remains.
 
-Use two clean accounts and only generated synthetic files. Record the deployed version and safe request IDs, not private payloads.
+## 9. Launch boundary
 
-1. `GET /api/v1/health` returns `200`, `status: "ok"`, database/object dependencies `true`, and `launch_ready: true`. Any configuration flag `false` blocks launch.
-2. Create an account, verify duplicate and malformed sign-up handling, sign out, and sign back in.
-3. Request password recovery, receive the Resend message, confirm the link uses exactly `PUBLIC_APP_URL`, reset once, prove the old password and a reused link fail, and prove existing sessions were revoked.
-4. Create each synthetic scenario and confirm their expected clear, clean-control, and abstention outcomes.
-5. In a blank synthetic case, upload one searchable PDF and one image. Confirm file/type/size rejection paths, parser values remaining review-required, and evidence-linked manual review for the image.
-6. Correct a fact, rerun analysis, select only intended findings, apply redactions, generate/download a PDF, fetch its manifest, and verify its SHA-256 hash.
-7. From the second account, request the first account's case, document, report, manifest, correction, and deletion routes. Every attempt must be denied with the same missing-resource shape.
-8. Export the first account and verify it contains no password hash, token, R2 object key, or foreign case.
-9. Delete one case and prove its API, document, report, and idempotent replays cannot recover private content.
-10. Set a synthetic case to the shortest retention window (or use a dedicated non-production test database), trigger/await the scheduled handler, and verify D1/R2 removal plus the content-free tombstone.
-11. Delete the test account, verify its sessions and cases are gone, and confirm a stale in-flight request cannot recreate a case.
-12. Check Worker logs and Resend events for secrets, email-body echoes, names, wages, evidence excerpts, or raw file data. None should appear.
-
-Repeat the critical paths on the final custom domain, mobile viewport, and keyboard-only navigation. Retest after any access-policy, runtime-variable, migration, or domain change.
-
-## 6. Launch checklist
-
-### Required to open the private beta
-
-- [ ] `npm ci`, `npm run preflight`, and `npm audit --omit=dev` pass on the exact release commit.
-- [ ] D1/R2 bindings and every append-only migration are present in the deployed version.
-- [ ] `RESEND_API_KEY`, verified `EMAIL_FROM`, and canonical `PUBLIC_APP_URL` pass the recovery smoke test.
-- [ ] Entity, jurisdiction, policy version/date, and support/privacy/security contacts are real and monitored.
-- [ ] Counsel reviewed `/terms`, `/privacy`, disclaimers, consent records, eligibility, governing law, liability language, and private-beta copy.
-- [ ] Private access policy and origin-bypass tests pass; forwarded identity is enabled only for a sanitizing gateway.
-- [ ] Scheduled retention is visible, manually exercised, monitored, and alerts a human on failure.
-- [ ] Immediate case deletion, account export/deletion, and cross-account denial pass in production.
-- [ ] Cloudflare, source-control, domain, and Resend operators use least privilege and phishing-resistant MFA.
-- [ ] Support, abuse, vulnerability, privacy-request, and incident-response owners/runbooks exist.
-- [ ] Testers are told not to upload unnecessary identifiers and not to treat WageShield as legal advice or their only document copy.
-
-### Required before unrestricted real-record use
-
-- [ ] Independent penetration test and privacy/threat-model assessment completed and findings remediated.
-- [ ] Appropriate antivirus/content-disarm isolation added for accepted uploads.
-- [ ] Jurisdiction-specific legal and regulatory review completed.
-- [ ] Production monitoring, PII-safe alerting, recovery objectives, incident exercises, and dependency scanning operate continuously.
-- [ ] Capacity/abuse tests cover the documented account, case, upload, parsing, report, event, and correction quotas.
-
-Until the second checklist is complete, market the live service as a private beta and keep the public demo synthetic-only. This is an honest product boundary, not a code defect that an API key can remove.
-
-## 7. Release and rollback discipline
-
-- Tag the exact tested source commit and record the deployment/version, migration list, policy version, rule-set version, and operator.
-- Apply forward migrations before code that requires them. Keep the previous application version available for an application rollback; do not “roll back” D1 by deleting migration records.
-- Use Cloudflare's D1 recovery/time-travel capability according to the account plan and incident runbook. Remember that restoring private records can conflict with deletion promises; privacy/legal approval is required before any restore involving user data.
-- Run the smoke test after rollback as well as deployment. A successful HTTP response alone is not recovery.
+The code is designed for a short, access-controlled investor beta, not an
+unrestricted public repository for immigration and payroll records. Before a
+general release, complete the independent penetration test, privacy/legal
+review, malware-scanning boundary, incident response, monitoring, recovery, and
+operator-account hardening listed in [`SECURITY.md`](SECURITY.md).

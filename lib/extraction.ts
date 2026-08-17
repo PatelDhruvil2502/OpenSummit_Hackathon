@@ -81,17 +81,16 @@ class PdfDomMatrix {
   }
 }
 
-/** PDF.js reads DOMMatrix while its module is evaluated, including in Workers. */
+/** PDF.js reads DOMMatrix while its module is evaluated in a server runtime. */
 async function loadPdfJs() {
   const runtime = globalThis as unknown as {
     DOMMatrix?: typeof PdfDomMatrix;
     pdfjsWorker?: { WorkerMessageHandler: unknown };
   };
   runtime.DOMMatrix ??= PdfDomMatrix;
-  // Cloudflare Workers cannot spawn PDF.js' browser worker, so PDF.js falls
-  // back to its in-process message handler. Import that handler explicitly so
-  // the production bundle contains it instead of attempting a runtime import
-  // of a non-existent `pdf.worker.mjs` asset.
+  // The Node request handler does not spawn PDF.js' browser worker, so PDF.js
+  // falls back to its in-process message handler. Import that handler explicitly
+  // so the production bundle contains it instead of relying on a runtime asset.
   const workerModule = await import("pdfjs-dist/build/pdf.worker.mjs");
   runtime.pdfjsWorker ??= { WorkerMessageHandler: workerModule.WorkerMessageHandler };
   return import("pdfjs-dist");

@@ -1,5 +1,3 @@
-import { env } from "cloudflare:workers";
-
 /**
  * Transactional email.
  *
@@ -8,9 +6,10 @@ import { env } from "cloudflare:workers";
  * shape, and so a deployment that has not configured a provider fails loudly and
  * safely instead of silently dropping reset links.
  *
- * Configure with two Worker secrets/vars:
+ * Configure with these server-only Render environment variables:
  *   RESEND_API_KEY   a Resend API key (https://resend.com)
  *   EMAIL_FROM       a verified sender, e.g. "WageShield <no-reply@yourdomain>"
+ *   EMAIL_REPLY_TO   an optional monitored address for replies
  */
 
 interface EmailEnv {
@@ -32,12 +31,24 @@ export type EmailResult =
   | { ok: false; reason: "PROVIDER_ERROR" };
 
 function emailEnv(): EmailEnv {
-  return env as unknown as EmailEnv;
+  return {
+    RESEND_API_KEY: process.env.RESEND_API_KEY?.trim() || undefined,
+    EMAIL_FROM: process.env.EMAIL_FROM?.trim() || undefined,
+    EMAIL_REPLY_TO: process.env.EMAIL_REPLY_TO?.trim() || undefined,
+  };
 }
 
 export function emailIsConfigured(): boolean {
   const { RESEND_API_KEY, EMAIL_FROM } = emailEnv();
-  return Boolean(RESEND_API_KEY && EMAIL_FROM);
+  if (!RESEND_API_KEY || !/^re_[^\s]{12,}$/.test(RESEND_API_KEY) || !EMAIL_FROM) return false;
+
+  const bracketed = EMAIL_FROM.match(/^[^<>\r\n]+<([^<>\s]+)>$/);
+  const address = (bracketed?.[1] ?? EMAIL_FROM).trim().toLowerCase();
+  return (
+    address.length <= 254 &&
+    /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(address) &&
+    !address.endsWith(".example")
+  );
 }
 
 export async function sendEmail(message: EmailMessage): Promise<EmailResult> {
@@ -53,6 +64,7 @@ export async function sendEmail(message: EmailMessage): Promise<EmailResult> {
         Authorization: `Bearer ${RESEND_API_KEY}`,
         "Content-Type": "application/json",
       },
+      signal: AbortSignal.timeout(10_000),
       body: JSON.stringify({
         from: EMAIL_FROM,
         to: [message.to],

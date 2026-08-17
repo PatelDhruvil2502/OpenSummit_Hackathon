@@ -32,7 +32,7 @@ export default function PrivacyPage() {
         {placeholders && (
           <p className="form-error" role="alert">
             This deployment still uses placeholder company details. Set the operator name and contact
-            addresses in <code>lib/company.ts</code> and have counsel review this page before launch.
+            environment values in Render and have counsel review this page before launch.
           </p>
         )}
       </section>
@@ -73,7 +73,7 @@ export default function PrivacyPage() {
             moment.
           </p>
           <p>
-            Expiry is enforced by a scheduled worker that runs on the{" "}
+            Expiry is enforced by a scheduled retention job that runs on the{" "}
             <code>{RETENTION_POLICY.sweepCron}</code> cron schedule. It deletes expired cases, their
             stored objects, and their audit rows, and it verifies each object is gone before
             reporting success. Expired cases also stop being readable immediately, before the sweep
@@ -92,7 +92,15 @@ export default function PrivacyPage() {
           <p>
             One record survives: a deletion tombstone holding a one-way SHA-256 hash of the case ID,
             the request and completion timestamps, and the policy version. It contains no case
-            content and cannot be reversed into a case ID. It exists so a deletion can be proven.
+            content and cannot be reversed into a case ID. It is the only case record retained in
+            the active database so a deletion can be proven.
+          </p>
+          <p>
+            Render continuously retains point-in-time recovery data for the paid PostgreSQL
+            service. On this Hobby deployment, a prior database state can remain recoverable to an
+            authorized workspace administrator for up to three days. Recovery copies are not served
+            by WageShield; the operator must not restore deleted records into the live service and
+            must reapply deletions before using any disaster-recovery database.
           </p>
         </article>
 

@@ -1,14 +1,26 @@
 import { sql } from "drizzle-orm";
 import {
+  check,
+  customType,
   index,
   integer,
+  pgTable,
   primaryKey,
-  sqliteTable,
   text,
   uniqueIndex,
-} from "drizzle-orm/sqlite-core";
+} from "drizzle-orm/pg-core";
+import { UPLOAD_POLICY } from "../lib/product-config";
 
-export const accounts = sqliteTable(
+// Timestamps and serialized payloads intentionally remain text. The existing
+// application uses canonical ISO-8601 UTC values and JSON strings throughout;
+// keeping those representations prevents driver-specific Date/JSON coercion
+// and preserves deterministic case/report hashes during the Render port.
+const utcNowText = sql`to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')`;
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType: () => "bytea",
+});
+
+export const accounts = pgTable(
   "accounts",
   {
     id: text("id").primaryKey(),
@@ -17,13 +29,13 @@ export const accounts = sqliteTable(
     passwordHash: text("password_hash").notNull(),
     policyAcceptedAt: text("policy_accepted_at"),
     policyVersion: text("policy_version"),
-    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: text("created_at").notNull().default(utcNowText),
+    updatedAt: text("updated_at").notNull().default(utcNowText),
   },
   (table) => [index("idx_accounts_email").on(table.email)],
 );
 
-export const authSessions = sqliteTable(
+export const authSessions = pgTable(
   "auth_sessions",
   {
     id: text("id").primaryKey(),
@@ -31,7 +43,7 @@ export const authSessions = sqliteTable(
       .notNull()
       .references(() => accounts.id, { onDelete: "cascade" }),
     tokenHash: text("token_hash").notNull().unique(),
-    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: text("created_at").notNull().default(utcNowText),
     expiresAt: text("expires_at").notNull(),
   },
   (table) => [
@@ -40,11 +52,8 @@ export const authSessions = sqliteTable(
   ],
 );
 
-/**
- * Single-use password reset tokens. Only the SHA-256 hash of the emailed token
- * is stored, so a database read cannot be replayed into an account takeover.
- */
-export const passwordResets = sqliteTable(
+/** Only a SHA-256 hash of each single-use reset token is persisted. */
+export const passwordResets = pgTable(
   "password_resets",
   {
     id: text("id").primaryKey(),
@@ -62,12 +71,7 @@ export const passwordResets = sqliteTable(
   ],
 );
 
-/**
- * Sign-in and sign-up throttling. Keyed by an opaque bucket string that already
- * encodes the action and either the client IP or the normalized email, so no
- * raw credential material is stored.
- */
-export const authRateLimits = sqliteTable(
+export const authRateLimits = pgTable(
   "auth_rate_limits",
   {
     bucket: text("bucket").primaryKey(),
@@ -78,7 +82,7 @@ export const authRateLimits = sqliteTable(
   (table) => [index("idx_auth_rate_limits_window").on(table.windowStartedAt)],
 );
 
-export const cases = sqliteTable(
+export const cases = pgTable(
   "cases",
   {
     id: text("id").primaryKey(),
@@ -93,8 +97,8 @@ export const cases = sqliteTable(
     reviewEnd: text("review_end").notNull(),
     payloadJson: text("payload_json").notNull(),
     retentionExpiresAt: text("retention_expires_at").notNull(),
-    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: text("created_at").notNull().default(utcNowText),
+    updatedAt: text("updated_at").notNull().default(utcNowText),
   },
   (table) => [
     index("idx_cases_owner_updated").on(table.ownerUserId, table.updatedAt),
@@ -102,7 +106,7 @@ export const cases = sqliteTable(
   ],
 );
 
-export const documentObjects = sqliteTable(
+export const documentObjects = pgTable(
   "document_objects",
   {
     id: text("id").primaryKey(),
@@ -114,12 +118,41 @@ export const documentObjects = sqliteTable(
     contentType: text("content_type").notNull(),
     byteSize: integer("byte_size").notNull(),
     sha256: text("sha256").notNull(),
-    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: text("created_at").notNull().default(utcNowText),
   },
   (table) => [index("idx_documents_case").on(table.caseId)],
 );
 
-export const reports = sqliteTable(
+/**
+ * Private evidence bytes live in PostgreSQL for the Render-only deployment.
+ * The case FK is a final cleanup net for a process crash between storing bytes
+ * and recording the corresponding document/report metadata.
+ */
+export const privateObjects = pgTable(
+  "private_objects",
+  {
+    objectKey: text("object_key").primaryKey(),
+    caseId: text("case_id")
+      .notNull()
+      .references(() => cases.id, { onDelete: "cascade" }),
+    contentType: text("content_type").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    sha256: text("sha256").notNull(),
+    body: bytea("body").notNull(),
+    createdAt: text("created_at").notNull().default(utcNowText),
+  },
+  (table) => [
+    index("idx_private_objects_case").on(table.caseId),
+    check(
+      "private_objects_byte_size_check",
+      sql`${table.byteSize} >= 0 AND ${table.byteSize} <= ${sql.raw(String(UPLOAD_POLICY.maximumFileBytes))}`,
+    ),
+    check("private_objects_body_size_check", sql`octet_length(${table.body}) = ${table.byteSize}`),
+    check("private_objects_sha256_check", sql`char_length(${table.sha256}) = 64`),
+  ],
+);
+
+export const reports = pgTable(
   "reports",
   {
     id: text("id").primaryKey(),
@@ -131,31 +164,33 @@ export const reports = sqliteTable(
     includedFindingIdsJson: text("included_finding_ids_json").notNull(),
     manifestJson: text("manifest_json").notNull().default("{}"),
     caseSnapshotVersion: integer("case_snapshot_version").notNull().default(1),
-    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: text("created_at").notNull().default(utcNowText),
   },
   (table) => [index("idx_reports_case").on(table.caseId)],
 );
 
-export const auditEvents = sqliteTable(
+export const auditEvents = pgTable(
   "audit_events",
   {
     id: text("id").primaryKey(),
-    caseId: text("case_id").notNull(),
+    caseId: text("case_id")
+      .notNull()
+      .references(() => cases.id, { onDelete: "cascade" }),
     eventType: text("event_type").notNull(),
     safeMetadataJson: text("safe_metadata_json").notNull().default("{}"),
-    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    createdAt: text("created_at").notNull().default(utcNowText),
   },
   (table) => [index("idx_audit_case_created").on(table.caseId, table.createdAt)],
 );
 
-export const deletionTombstones = sqliteTable("deletion_tombstones", {
+export const deletionTombstones = pgTable("deletion_tombstones", {
   caseIdHash: text("case_id_hash").primaryKey(),
   requestedAt: text("requested_at").notNull(),
   completedAt: text("completed_at").notNull(),
   policyVersion: text("policy_version").notNull(),
 });
 
-export const idempotencyKeys = sqliteTable(
+export const idempotencyKeys = pgTable(
   "idempotency_keys",
   {
     ownerUserId: text("owner_user_id").notNull(),
@@ -168,11 +203,7 @@ export const idempotencyKeys = sqliteTable(
   },
   (table) => [
     primaryKey({
-      columns: [
-      table.ownerUserId,
-      table.operationScope,
-      table.idempotencyKey,
-      ],
+      columns: [table.ownerUserId, table.operationScope, table.idempotencyKey],
     }),
     index("idx_idempotency_expiry").on(table.expiresAt),
   ],

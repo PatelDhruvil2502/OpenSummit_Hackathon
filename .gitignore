@@ -28,12 +28,10 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# Local environment files can contain account IDs and secrets. Keep the two
-# sanitized templates tracked so every deploy target has an explicit contract.
+# Local environment files can contain account IDs and secrets. Keep the
+# sanitized template tracked so every deploy target has an explicit contract.
 .env*
 !.env.example
-.dev.vars*
-!.dev.vars.example
 
 # vercel
 .vercel

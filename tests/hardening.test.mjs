@@ -161,7 +161,7 @@ test("anonymous API calls are denied without creating an identity cookie", async
   }
 });
 
-test("email signup and signin persist an account in D1 and isolate cases", async () => {
+test("email signup and signin persist an account in PostgreSQL and isolate cases", async () => {
   const local = harness.client(null, { origin: "http://localhost" });
   const page = await local.request("/signin?return_to=%2Fcases", {
     headers: { accept: "text/html" },

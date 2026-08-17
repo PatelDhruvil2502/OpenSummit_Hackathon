@@ -29,7 +29,7 @@ Users must:
 
 ## 4. Retention, deletion, and continuity
 
-Each case has a user-selected retention period of one hour through seven days, defaulting to 24 hours. Expired cases become unreadable immediately and are deleted by a scheduled sweep that runs every 15 minutes. A user can delete a case sooner; deletion is verified before success is reported. A content-free one-way tombstone may remain to prove completion.
+Each case has a user-selected retention period of one hour through seven days, defaulting to 24 hours. Expired cases become unreadable immediately and are deleted by a scheduled sweep that runs every 15 minutes. A user can delete a case sooner; removal from the live service is verified before success is reported. A content-free one-way tombstone may remain to prove completion. Render's paid PostgreSQL recovery system can retain a prior database state for its documented recovery window (three days on the Hobby workspace); those copies are not served by WageShield and must not be used to reintroduce deleted records.
 
 The service is provided on an as-available basis. A user must keep their own source copy: automatic expiry is intended behavior, not data loss for which the service acts as a backup.
 

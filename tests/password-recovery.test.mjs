@@ -98,17 +98,20 @@ test("password reset is single-use, revokes sessions, and rotates the password",
   assert.match(replay.headers.get("location") ?? "", /error=token/);
 });
 
-test("forgot-password responses do not enumerate accounts and fail closed when production email is absent", async () => {
-  const local = harness.client(null, { origin: "http://localhost" });
+test("production forgot-password responses do not enumerate accounts when email is absent", async () => {
+  // The harness runs a production Next server. Even a localhost-shaped request
+  // must not activate the development reset-link path or reveal whether the
+  // address exists when outbound email is unavailable.
+  const localShapedRequest = harness.client(null, { origin: "http://localhost" });
   for (const email of ["recovery@example.test", "missing@example.test"]) {
-    const response = await local.request("/api/auth/forgot-password", {
+    const response = await localShapedRequest.request("/api/auth/forgot-password", {
       method: "POST",
       body: new URLSearchParams({ email, return_to: "/account" }),
     });
     assert.equal(response.status, 303);
     assert.equal(
       response.headers.get("location"),
-      "/forgot-password?sent=1&return_to=%2Faccount",
+      "/forgot-password?error=unavailable&return_to=%2Faccount",
     );
   }
 

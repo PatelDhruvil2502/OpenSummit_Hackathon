@@ -7,7 +7,7 @@ import { listOwnedCases } from "@/lib/storage";
 /**
  * A portable, structured copy of the data WageShield currently retains for
  * the signed-in user. `jsonResponse` recursively omits storage-only owner and
- * object-key fields, so an export never leaks R2 paths or internal ownership
+ * object-key fields, so an export never leaks storage paths or internal ownership
  * metadata.
  */
 export async function GET(request: Request) {

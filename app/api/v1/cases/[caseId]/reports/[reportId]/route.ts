@@ -15,10 +15,10 @@ export async function GET(request: Request, context: Context) {
     const object = await getReportBytes(caseId, reportId, identity.user.userId);
     if (!object) return notFound();
     const headers = privateResponseHeaders();
-    object.writeHttpMetadata(headers);
     headers.set("Content-Type", "application/pdf");
+    headers.set("Content-Length", String(object.size));
     headers.set("Content-Disposition", `attachment; filename="wageshield-evidence-report.pdf"`);
-    headers.set("ETag", `"${object.customMetadata?.sha256 ?? reportId}"`);
+    headers.set("ETag", object.etag);
     headers.set("X-Content-Type-Options", "nosniff");
     return new Response(object.body, { headers });
   } catch (error) {

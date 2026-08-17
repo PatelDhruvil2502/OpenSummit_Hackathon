@@ -1,4 +1,5 @@
 import { errorResponse } from "./api";
+import { publicAppOrigin } from "./runtime-flags";
 
 export function mutationGuard(request: Request): Response | null {
   const fetchSite = request.headers.get("sec-fetch-site")?.toLowerCase();
@@ -13,7 +14,12 @@ export function mutationGuard(request: Request): Response | null {
   const origin = request.headers.get("origin");
   if (origin) {
     try {
-      if (new URL(origin).origin !== new URL(request.url).origin) {
+      // On Render the public HTTPS origin is terminated at the edge while the
+      // Node service receives an internal request.  Compare browser mutations
+      // with the explicitly configured canonical origin rather than relying on
+      // that internal URL.
+      const expectedOrigin = publicAppOrigin() ?? new URL(request.url).origin;
+      if (new URL(origin).origin !== expectedOrigin) {
         return errorResponse(
           "CSRF_REJECTED",
           "This update was rejected because it did not originate from WageShield.",

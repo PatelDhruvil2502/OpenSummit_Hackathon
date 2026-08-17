@@ -59,8 +59,8 @@ function safeFullName(headers: HeaderReader): string | null {
 
 /**
  * Forwarded identity headers are only meaningful behind a gateway that strips
- * client-supplied copies and injects its own (OpenAI Sites does this). On a
- * directly-addressable Worker they are attacker-controlled, and trusting them
+ * client-supplied copies and injects its own. On a directly addressable Render
+ * service they are attacker-controlled, and trusting them
  * would let anyone authenticate as any user by setting a request header.
  *
  * So the path is opt-in: it stays off unless the deployment sets
@@ -93,8 +93,11 @@ function forwardedUser(headers: HeaderReader, trusted: boolean): AuthenticatedUs
 }
 
 function hostnameFromHeaders(headers: HeaderReader): string {
-  const rawHost = (headers.get("x-forwarded-host") ?? headers.get("host") ?? "")
-    .split(",")[0]
+  const forwardedHosts = headers.get("x-forwarded-host")?.split(",") ?? [];
+  // Render terminates TLS at its proxy and appends the value it forwards to
+  // the service.  Prefer the proxy-nearest (rightmost) host instead of a
+  // client-controlled value that may have been prepended upstream.
+  const rawHost = (forwardedHosts.at(-1) ?? headers.get("host") ?? "")
     .trim();
   if (!rawHost) return "";
   try {
@@ -110,6 +113,8 @@ export function isLocalHostname(hostname: string): boolean {
 }
 
 export function isLocalRequest(request: Request): boolean {
+  const forwardedHostname = hostnameFromHeaders(request.headers);
+  if (forwardedHostname) return isLocalHostname(forwardedHostname);
   try {
     return isLocalHostname(new URL(request.url).hostname);
   } catch {
@@ -142,6 +147,10 @@ export async function getRequestIdentity(request: Request): Promise<RequestIdent
 }
 
 export function requestUsesHttps(request: Request): boolean {
+  const forwardedProtocols = request.headers.get("x-forwarded-proto")?.split(",") ?? [];
+  const forwardedProtocol = forwardedProtocols.at(-1)?.trim().toLowerCase();
+  if (forwardedProtocol === "https") return true;
+  if (forwardedProtocol === "http") return false;
   try {
     return new URL(request.url).protocol === "https:";
   } catch {

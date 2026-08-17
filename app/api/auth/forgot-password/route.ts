@@ -32,7 +32,8 @@ export async function POST(request: Request) {
   await recordAuthAttempt(request, "reset", email);
 
   const appOrigin = publicAppOrigin(request);
-  if ((!emailIsConfigured() || !appOrigin) && !isLocalRequest(request)) {
+  const localDevelopment = process.env.NODE_ENV !== "production" && isLocalRequest(request);
+  if ((!emailIsConfigured() || !appOrigin) && !localDevelopment) {
     return redirect(`/forgot-password?error=unavailable&${recoveryQuery}`);
   }
 
@@ -47,7 +48,7 @@ export async function POST(request: Request) {
       passwordResetMessage(reset.email, resetUrl, PASSWORD_RESET_MINUTES),
     );
     if (!result.ok) return redirect(`/forgot-password?error=unavailable&${recoveryQuery}`);
-    if (!result.delivered && isLocalRequest(request)) {
+    if (!result.delivered && localDevelopment) {
       // Local development without an email provider: print the link to the dev
       // server log instead of silently discarding it. Never reachable in
       // production because the unconfigured case redirects above.

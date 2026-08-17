@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import { headers } from "next/headers";
+import { publicAppOrigin } from "@/lib/runtime-flags";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -17,19 +17,11 @@ const SITE_TITLE = "WageShield H-1B | Evidence first. Human reviewed.";
 const SITE_DESCRIPTION =
   "A privacy-first evidence auditor for H-1B workers that compares employment records using transparent, deterministic checks.";
 
-export async function generateMetadata(): Promise<Metadata> {
-  const requestHeaders = await headers();
-  const rawHost = (requestHeaders.get("x-forwarded-host") ?? requestHeaders.get("host") ?? "localhost:3000")
-    .split(",")[0]
-    .trim();
-  const host = /^[a-z0-9.-]+(?::\d+)?$/i.test(rawHost) ? rawHost : "localhost:3000";
-  const forwardedProtocol = requestHeaders.get("x-forwarded-proto")?.split(",")[0].trim();
-  const protocol = forwardedProtocol === "https" || forwardedProtocol === "http"
-    ? forwardedProtocol
-    : host.startsWith("localhost")
-      ? "http"
-      : "https";
-  const origin = new URL(`${protocol}://${host}`);
+export function generateMetadata(): Metadata {
+  // The production origin comes from a trusted environment value, never the
+  // request Host header. Render supplies RENDER_EXTERNAL_URL during builds;
+  // PUBLIC_APP_URL takes precedence after a custom domain is attached.
+  const origin = new URL(publicAppOrigin() ?? "http://localhost:3000");
   const socialImage = new URL("/og-launch.png", origin).toString();
 
   return {

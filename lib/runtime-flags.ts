@@ -1,25 +1,26 @@
-import { env } from "cloudflare:workers";
-
 /**
- * Deployment flags read from the Worker environment.
- *
- * Kept in its own module so `lib/identity.ts` can stay free of a static
- * `cloudflare:workers` import and be loaded from any bundling context.
+ * Server-only deployment flags read from Render's Node environment.
  */
 interface RuntimeFlags {
   TRUST_FORWARDED_IDENTITY?: string;
   PUBLIC_APP_URL?: string;
+  RENDER_EXTERNAL_URL?: string;
   ENABLE_SANDBOX?: string;
 }
 
 function flags(): RuntimeFlags {
-  return env as unknown as RuntimeFlags;
+  return {
+    TRUST_FORWARDED_IDENTITY: process.env.TRUST_FORWARDED_IDENTITY,
+    PUBLIC_APP_URL: process.env.PUBLIC_APP_URL,
+    RENDER_EXTERNAL_URL: process.env.RENDER_EXTERNAL_URL,
+    ENABLE_SANDBOX: process.env.ENABLE_SANDBOX,
+  };
 }
 
 /**
- * True only when the deployment declares that a gateway in front of this Worker
+ * True only when the deployment declares that a gateway in front of this service
  * strips client-supplied identity headers and injects its own. Default false:
- * on a directly-addressable Worker those headers are attacker-controlled.
+ * on a directly-addressable Render service those headers are attacker-controlled.
  */
 export function trustsForwardedIdentity(): boolean {
   const declared = flags().TRUST_FORWARDED_IDENTITY;
@@ -36,12 +37,14 @@ export function sandboxIsEnabled(): boolean {
 }
 
 /**
- * Canonical public origin used in security-sensitive emails. Requiring an
- * explicit production value prevents a forged Host header from being turned
- * into an account-recovery link. Local development may use its request origin.
+ * Canonical public origin used in security-sensitive emails. An explicit value
+ * wins for custom domains; otherwise Render's platform-provided external URL is
+ * trusted. We never derive a production reset link from the request Host header.
+ * Local development may use its request origin.
  */
 export function publicAppOrigin(request?: Request): string | null {
-  const declared = flags().PUBLIC_APP_URL?.trim();
+  const runtime = flags();
+  const declared = runtime.PUBLIC_APP_URL?.trim() || runtime.RENDER_EXTERNAL_URL?.trim();
   if (declared) {
     try {
       const url = new URL(declared);

@@ -213,7 +213,7 @@ export interface EmploymentEvent {
 
 export interface CasePayload {
   id: string;
-  /** Stable Sites/ChatGPT user identifier. Never expose this in API payloads. */
+  /** Stable authenticated user identifier. Never expose this in API payloads. */
   ownerUserId: string;
   mode: CaseMode;
   scenario: Scenario;

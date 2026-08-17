@@ -94,7 +94,8 @@ export default function SecurityPage() {
           <ul>
             <li>Uploads are not scanned by an antivirus or content-disarm engine. Structural validation is not malware detection.</li>
             <li>There is no second authentication factor yet. Account safety rests on your password.</li>
-            <li>Object storage uses the provider&apos;s encryption at rest; WageShield does not add customer-managed keys.</li>
+            <li>Render PostgreSQL uses provider encryption at rest; WageShield does not add customer-managed keys.</li>
+            <li>Paid Render PostgreSQL point-in-time recovery can retain a recoverable prior database state for up to three days on this Hobby workspace, as disclosed in the Privacy policy.</li>
             <li>An independent penetration test and privacy assessment have not been performed on this build.</li>
           </ul>
         </article>

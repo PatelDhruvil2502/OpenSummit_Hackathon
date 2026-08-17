@@ -10,12 +10,12 @@ This file is the operator/auditor companion to the visitor-facing `/privacy` pag
 
 ## Data the product stores
 
-- Account email, display name, PBKDF2-SHA256 password hash, policy-consent version/time, and hashed session tokens in D1.
+- Account email, display name, PBKDF2-SHA256 password hash, policy-consent version/time, and hashed session tokens in Render PostgreSQL.
 - Hashed, single-use password-reset tokens and hashed rate-limit buckets. Raw passwords, session tokens, reset tokens, and raw rate-limit emails are not stored.
 - Case settings, reviewed structured facts, evidence excerpts, corrections, findings, report selections, and retention timestamps.
-- Uploaded documents and generated reports in private R2 object storage under random case-scoped keys; D1 retains their ownership and integrity metadata.
+- Uploaded documents and generated reports as private binary rows in Render PostgreSQL under random case-scoped keys, together with ownership and integrity metadata.
 - Safe operational audit metadata: opaque IDs, event stage, document size/type, counts, rule/policy versions, and timestamps.
-- A post-deletion tombstone containing only a one-way SHA-256 case-ID hash, request/completion times, and deletion-policy version.
+- In the active database after deletion, a tombstone containing only a one-way SHA-256 case-ID hash, request/completion times, and deletion-policy version.
 
 ## Data deliberately excluded
 
@@ -24,21 +24,23 @@ This file is the operator/auditor companion to the visitor-facing `/privacy` pag
 - No employer, agency, or other third-party notification and no automatic complaint filing.
 - No copy of private case material in the separate official-source corpus.
 - No structured SSN, passport, banking, card, medical, or government-credential field. Users should redact unnecessary identifiers before upload.
-- No model-training use and no external AI/OCR transfer. Searchable PDF text is parsed within the Worker; images require human review.
+- No model-training use and no external AI/OCR transfer. Searchable PDF text is parsed within the Render Node service; images require human review.
 
 ## Retention and deletion
 
 Each case has an independent retention period from one hour through seven days; the default is 24 hours. Changing it restarts the window from that moment.
 
-An expired case becomes unreadable immediately at the ownership query boundary. The scheduled Worker runs every 15 minutes (`*/15 * * * *`) and inventories, deletes, and verifies expired case records and objects. Physical removal therefore occurs on the next successful sweep, normally within 15 minutes of expiry. Operators must monitor scheduled-handler failures; a cron declaration without alerting is not an operational guarantee.
+An expired case becomes unreadable immediately at the ownership query boundary. The Render Cron Job runs every 15 minutes (`*/15 * * * *`) and inventories, deletes, and verifies expired case records and private binary objects. Physical removal therefore occurs on the next successful sweep, normally within 15 minutes of expiry. Operators must monitor failed cron runs; a cron declaration without alerting is not an operational guarantee.
 
-A user can delete a case immediately. Deletion covers original objects, report objects, structured case content, object inventories, case audit events, and case-scoped idempotency state, then verifies the objects and record are no longer accessible. The non-substantive tombstone described above remains only to prove the deletion was completed.
+A user can delete a case immediately from the live service. Deletion covers original objects, report objects, structured case content, object inventories, case audit events, and case-scoped idempotency state, then verifies the objects and record are no longer accessible through the application. The active database retains only the non-substantive tombstone described above to prove the deletion was completed.
+
+The paid Render PostgreSQL service continuously keeps point-in-time recovery data. On the Hobby workspace used by this Blueprint, a previous database state can remain recoverable by an authorized Render workspace administrator for up to three days. These recovery copies are not queried or exposed by WageShield, and deleting a Render database also removes its backups. The operator must not restore a point before a user's deletion except under a documented, legally reviewed disaster-recovery process; if a recovery is unavoidable, deleted records must be removed again before the recovered database is connected to the application.
 
 Account controls provide an export and verified account deletion. Account deletion revokes sessions and removes account-owned cases before removing the account. A user must not treat the service as the only copy of a document, because short retention is a product feature.
 
 ## Processors and credentials
 
-Cloudflare processes D1, R2, Worker, and delivery traffic. Resend receives the destination email address and password-reset message only when the user requests account recovery. No evidence document is sent to Resend. The operator is responsible for applicable processor agreements, data-location choices, access policy, and subprocessor disclosure.
+Render processes the Node application, PostgreSQL records and private document/report bytes, cron execution, delivery traffic, and its documented recovery copies. Resend receives the destination email address and password-reset message only when the user requests account recovery. No evidence document is sent to Resend. The operator is responsible for applicable processor agreements, data-location choices, recovery access, access policy, and subprocessor disclosure.
 
 ## Operator obligations before launch
 

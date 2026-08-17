@@ -21,13 +21,13 @@ These choices are canonical across fixtures, API contracts, UI, tests, and repor
 
 ## Identity and retention
 
-- Case ownership uses a D1 account ID. A Site-forwarded ID is accepted only when `TRUST_FORWARDED_IDENTITY=true` behind a gateway that sanitizes those headers.
+- Case ownership uses a PostgreSQL account ID. Render deployments use the built-in account flow and keep `TRUST_FORWARDED_IDENTITY=false`.
 - New cases default to 24-hour retention, selectable from one hour to seven days.
-- Expired cases are unreadable immediately. A scheduled Worker runs every 15 minutes to delete their D1 records and R2 objects and verify removal.
-- Immediate case deletion and account deletion use the same inventory-and-verify boundary. Only a content-free one-way case tombstone remains.
+- Expired cases are unreadable immediately. A Render Cron Job runs every 15 minutes to delete their PostgreSQL records and private binary objects and verify removal.
+- Immediate case deletion and account deletion use the same inventory-and-verify boundary. Only a content-free one-way case tombstone remains in the active database; Render's processor-level recovery window is disclosed separately.
 
 ## Deployment history
 
-- Drizzle migrations are append-only. `0000` through `0005` are treated as already shipped; password recovery and policy consent are later migrations.
-- OpenAI Sites owns real D1/R2 resources from the logical `DB` and `BUCKET` declarations.
-- A directly-addressable Cloudflare Worker must keep forwarded identity disabled unless a separately verified sanitizing gateway protects the origin.
+- Render PostgreSQL uses the append-only `drizzle-render/` migration chain, applied by the Blueprint pre-deploy command. Retired deployment artifacts remain only in Git history.
+- Private PostgreSQL binary storage uses the same authenticated document/report API as the earlier storage adapter.
+- A directly addressable Render service keeps forwarded identity disabled unless a separately verified sanitizing gateway protects the origin.
