@@ -632,8 +632,12 @@ button {
 }
 
 .button:disabled {
-  cursor: wait;
+  cursor: not-allowed;
   opacity: 0.65;
+}
+
+.button:disabled:has(.spin) {
+  cursor: progress;
 }
 
 .button-primary {
