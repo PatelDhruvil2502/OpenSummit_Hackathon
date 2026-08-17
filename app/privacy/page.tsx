@@ -57,15 +57,17 @@ export default function PrivacyPage() {
           <p>
             AI processing is off for an upload unless you explicitly select it. When selected, a
             bounded set of document pages and the declared document type are sent to the configured
-            Featherless inference API for extraction and a separate grounding check. WageShield does
+            OpenRouter inference API for extraction and a separate grounding check. WageShield does
             not separately add your account email, password, case ID, or existing case history, but
             the selected pages naturally include whatever information appears in the document.
           </p>
           <p>
-            Featherless states that API prompts and completions are processed in real time and are
-            not logged or stored on its servers. Review its{" "}
-            <a href="https://featherless.ai/docs/privacy-and-logging" target="_blank" rel="noreferrer">
-              current privacy and logging documentation
+            OpenRouter states that it does not retain prompts or completions unless the account
+            explicitly opts into prompt logging. Downstream model hosts have separate policies;
+            WageShield requests endpoints that deny provider data collection by default. Review
+            OpenRouter&apos;s{" "}
+            <a href="https://openrouter.ai/docs/guides/privacy/provider-logging/" target="_blank" rel="noreferrer">
+              current provider logging documentation
             </a>{" "}
             before opting in. WageShield does not use evidence or model output to train a model.
             Leave the option unchecked to use only local text parsing and manual review.

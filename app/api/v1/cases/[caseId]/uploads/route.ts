@@ -322,6 +322,8 @@ function aiFailureWarning(code: string): string {
       "The provider rejected the vision request format. The operator should inspect the content-free Render diagnostic and verify provider compatibility.",
     AI_PROVIDER_AUTHENTICATION_FAILED:
       "The provider rejected the server credential. The operator should verify or rotate the configured API key.",
+    AI_PROVIDER_CREDITS_REQUIRED:
+      "The provider account or API key has insufficient credits. The operator should add credits or select an eligible synthetic-only free model.",
     AI_PROVIDER_ACCESS_DENIED:
       "The provider account or plan cannot access the configured model. The operator should verify model access and account credit.",
     AI_PROVIDER_MODEL_NOT_FOUND:

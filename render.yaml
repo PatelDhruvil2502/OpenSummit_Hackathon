@@ -26,16 +26,18 @@ services:
         value: "3221225472"
       - key: OBJECT_STORAGE_ACCOUNT_MAX_BYTES
         value: "1610612736"
-      - key: AI_EVIDENCE_API_KEY
+      - key: OPENROUTER_API_KEY
         sync: false
       - key: AI_EVIDENCE_BASE_URL
-        value: https://api.featherless.ai/v1
+        value: https://openrouter.ai/api/v1
       - key: AI_EVIDENCE_MODEL
-        value: Qwen/Qwen3-VL-8B-Instruct
+        value: qwen/qwen3-vl-8b-instruct
       - key: AI_EVIDENCE_VERIFIER_MODEL
-        value: Qwen/Qwen3-VL-8B-Instruct
+        value: qwen/qwen3-vl-8b-instruct
       - key: AI_EVIDENCE_TIMEOUT_MS
         value: "45000"
+      - key: AI_EVIDENCE_ALLOW_PROVIDER_DATA_COLLECTION
+        value: "false"
       - key: RESEND_API_KEY
         sync: false
       - key: EMAIL_FROM

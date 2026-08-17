@@ -58,17 +58,19 @@ recovery copies. Resend receives the destination email address and
 password-reset message only when the user requests account recovery. No
 evidence document is sent to Resend.
 
-When configured, Featherless (or the explicitly selected OpenAI-compatible
-provider) receives the bounded page images, extracted text, and task prompts
+When configured, OpenRouter and its selected downstream model host receive the
+bounded page images, extracted text, and task prompts
 required for two inference passes after the user consents for that upload.
-Featherless's published API policy currently says API prompts
-and completions are processed in real time and are not logged or stored; that
-provider statement is not a WageShield guarantee and may change. The operator
-must review the current policy, chosen model license, account plan, data
-location, subprocessors, incident terms, and any data-processing agreement
-before enabling AI for a real private record. See
-[Featherless privacy and logging](https://featherless.ai/docs/privacy-and-logging)
-and its [privacy policy](https://featherless.ai/legal/privacy-policy).
+OpenRouter states that it does not retain prompts or completions unless prompt
+logging is explicitly enabled. Downstream providers have separate policies, so
+the application requests `data_collection: "deny"` by default and requires an
+explicit synthetic-only override before permitting data-collecting endpoints.
+Those provider statements are not WageShield guarantees and may change. The
+operator must review the current policy, chosen model license, account plan,
+data location, subprocessors, incident terms, and any data-processing
+agreement before enabling AI for a real private record. See
+[OpenRouter provider logging](https://openrouter.ai/docs/guides/privacy/provider-logging/)
+and [zero-data-retention controls](https://openrouter.ai/docs/guides/features/zdr).
 
 The public hackathon demonstration must use generated synthetic records only,
 which avoids sending a real person's payroll or immigration evidence to the
@@ -84,7 +86,7 @@ inference provider. No evidence document is sent to Resend.
   private-beta records, document the provider/model decision, verify its
   current retention and training terms, obtain any required agreement or
   consent, and update both the served privacy notice and processing inventory.
-- Rotate `AI_EVIDENCE_API_KEY` if exposed; never place it in a `NEXT_PUBLIC_*`
+- Rotate `OPENROUTER_API_KEY` if exposed; never place it in a `NEXT_PUBLIC_*`
   variable, browser bundle, log, screenshot, evaluation result, or repository.
 - Test export, immediate deletion, scheduled expiry, password reset, and cross-account denial against the deployed environment.
 

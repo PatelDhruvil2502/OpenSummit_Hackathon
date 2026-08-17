@@ -17,6 +17,8 @@ const runtime: AiEvidenceRuntimeConfiguration = {
   model: "vision-extractor",
   verifierModel: "independent-verifier",
   timeoutMs: 5_000,
+  siteUrl: "https://wageshield.example.test",
+  allowProviderDataCollection: false,
 };
 
 const preparedInput: AiEvidencePreparedInput = {
@@ -109,8 +111,21 @@ test("uses distinct extraction and grounding calls and returns only grounded pro
   const verifierRequest = JSON.parse(String(requests[1].init?.body));
   assert.equal(extractionRequest.model, "vision-extractor");
   assert.equal(verifierRequest.model, "independent-verifier");
-  assert.equal("response_format" in extractionRequest, false);
-  assert.equal("response_format" in verifierRequest, false);
+  assert.equal(extractionRequest.response_format.type, "json_schema");
+  assert.equal(extractionRequest.response_format.json_schema.strict, true);
+  assert.deepEqual(extractionRequest.response_format.json_schema.schema.required, [
+    "facts", "pay_periods", "deductions", "abstentions",
+  ]);
+  assert.equal(verifierRequest.response_format.type, "json_schema");
+  assert.deepEqual(verifierRequest.response_format.json_schema.schema.required, ["decisions"]);
+  assert.deepEqual(extractionRequest.provider, {
+    require_parameters: true,
+    data_collection: "deny",
+  });
+  assert.equal(
+    new Headers(requests[0].init?.headers).get("HTTP-Referer"),
+    "https://wageshield.example.test",
+  );
   assert.notEqual(
     extractionRequest.messages[0].content,
     verifierRequest.messages[0].content,
@@ -310,6 +325,7 @@ test("maps provider authentication, access, model, and request failures to safe 
   const cases = [
     [400, "AI_PROVIDER_BAD_REQUEST"],
     [401, "AI_PROVIDER_AUTHENTICATION_FAILED"],
+    [402, "AI_PROVIDER_CREDITS_REQUIRED"],
     [403, "AI_PROVIDER_ACCESS_DENIED"],
     [404, "AI_PROVIDER_MODEL_NOT_FOUND"],
     [413, "AI_PROVIDER_REQUEST_TOO_LARGE"],

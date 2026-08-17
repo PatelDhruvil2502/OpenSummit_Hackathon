@@ -18,7 +18,7 @@ The code supports two deliberately different uses:
 
 The public hackathon/evaluation experience is synthetic-only. When configured,
 the AI Evidence Copilot sends bounded page images and extracted text through a server-side
-Featherless or other OpenAI-compatible inference endpoint for separate
+OpenRouter inference endpoint for separate
 extraction and verification passes. Provider output is untrusted, schema
 validated, citation checked, and always saved as `NEEDS_REVIEW`; a failure or
 uncertain result returns to manual review rather than guessing. All money,
@@ -57,16 +57,17 @@ localhost uses the development password-reset flow. Without AI configuration,
 local parsing and manual review continue to work, but the AI Evidence Copilot
 is unavailable and the build is not a complete hackathon demo.
 
-To exercise the real AI workflow, create a Featherless API key and select a
-compatible model from its catalog, then set these server-side values in
+To exercise the real AI workflow, create an OpenRouter API key and add a small
+credit balance for the pinned model, then set these server-side values in
 `.env.local`:
 
 ```dotenv
-AI_EVIDENCE_API_KEY=replace-with-your-key
-AI_EVIDENCE_BASE_URL=https://api.featherless.ai/v1
-AI_EVIDENCE_MODEL=Qwen/Qwen3-VL-8B-Instruct
+OPENROUTER_API_KEY=replace-with-your-key
+AI_EVIDENCE_BASE_URL=https://openrouter.ai/api/v1
+AI_EVIDENCE_MODEL=qwen/qwen3-vl-8b-instruct
 # Optional: use a different model for the separate verifier pass.
 AI_EVIDENCE_VERIFIER_MODEL=
+AI_EVIDENCE_ALLOW_PROVIDER_DATA_COLLECTION=false
 ```
 
 Never prefix the key with `NEXT_PUBLIC_`, expose it in browser code, or commit
@@ -119,7 +120,7 @@ Render Node Web Service
        |             |
        |      AI Evidence Copilot
        |      extraction -> verifier
-       |      (Featherless/OpenAI-compatible)
+       |      (OpenRouter structured-output API)
        |
      Render PostgreSQL
   structured state + private bytes

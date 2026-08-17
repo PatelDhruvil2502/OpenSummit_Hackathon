@@ -1,6 +1,6 @@
 # WageShield developer handoff
 
-Last updated: 2026-08-16
+Last updated: 2026-08-17
 
 This file gives a new developer the durable context from the startup-readiness,
 security, and Render-deployment work completed in the preceding development
@@ -14,13 +14,12 @@ current code and tests, then update this file in the same change.
 - Deployable branch: `main`
 - Render-port baseline commit: `13bf1a2` (`feat(deploy): port runtime to Render`)
 - The baseline was pushed to `origin/main` with a clean worktree.
-- The local Git author email is still the placeholder `your-email@example.com`.
-  Configure the developer's real or GitHub-noreply address before future
-  commits; do not rewrite existing history only to change this metadata.
-- No Render service, PostgreSQL database, Featherless/Resend secret, DNS record,
-  or custom domain was created by the coding session. Those are still operator
-  actions.
-- No production secret is stored in Git. Do not add one to this file.
+- Configure the committing collaborator's real or GitHub-noreply address before
+  future commits; do not impersonate the repository owner or rewrite existing
+  history only to change metadata.
+- No production secret is stored in Git; OpenRouter and Resend credentials are
+  operator-managed Render environment variables. DNS and custom-domain changes
+  remain operator actions.
 - The immediate public use is the Open Summit Atlas AI for Social Good
   hackathon and must use synthetic records only. A later low-traffic,
   access-controlled investor demo may use authorized real records only after
@@ -33,8 +32,8 @@ current code and tests, then update this file in the same change.
 - The desired hosting choice is Render because the founder has a $50 Render
   promotion. Cloudflare, Netlify, Vercel Blob, and S3 are not part of the final
   deployment.
-- Two third-party APIs are configured: Featherless/OpenAI-compatible inference
-  for the optional per-upload AI Evidence Copilot, and Resend for password
+- Two third-party APIs are configured: OpenRouter inference for the optional
+  per-upload AI Evidence Copilot, and Resend for password
   recovery. No vector database, downloaded model, or application GPU is used.
 
 ## Product summary
@@ -88,7 +87,7 @@ Render Cron Job
 Resend
   `-- password-reset email only
 
-Featherless/OpenAI-compatible API
+OpenRouter API
   `-- bounded multimodal extraction and separate grounding verification
 ```
 
@@ -307,7 +306,7 @@ The sanitized contract is `.env.example`. Production values marked
 
 | Variable | Purpose |
 | --- | --- |
-| `AI_EVIDENCE_API_KEY` | Dedicated server-only Featherless inference key |
+| `OPENROUTER_API_KEY` | Dedicated server-only OpenRouter inference key |
 | `RESEND_API_KEY` | Dedicated Resend sending key |
 | `EMAIL_FROM` | Sender on the exact verified Resend domain |
 | `EMAIL_REPLY_TO` | Monitored reply-capable address |
@@ -331,10 +330,11 @@ set `PUBLIC_APP_URL` to its exact HTTPS origin and redeploy.
 The Blueprint pins these non-secret AI defaults:
 
 ```text
-AI_EVIDENCE_BASE_URL=https://api.featherless.ai/v1
-AI_EVIDENCE_MODEL=Qwen/Qwen3-VL-8B-Instruct
-AI_EVIDENCE_VERIFIER_MODEL=Qwen/Qwen3-VL-8B-Instruct
+AI_EVIDENCE_BASE_URL=https://openrouter.ai/api/v1
+AI_EVIDENCE_MODEL=qwen/qwen3-vl-8b-instruct
+AI_EVIDENCE_VERIFIER_MODEL=qwen/qwen3-vl-8b-instruct
 AI_EVIDENCE_TIMEOUT_MS=45000
+AI_EVIDENCE_ALLOW_PROVIDER_DATA_COLLECTION=false
 ```
 
 Changing either model requires a fresh synthetic evaluation. The verifier model
@@ -365,7 +365,7 @@ next developer or founder must:
 
 1. Apply the $50 promotion to the intended Render workspace under
    **Billing -> Credit Balance** and record its expiration.
-2. Create a dedicated Featherless API key, keep the pinned model pair, and run
+2. Create a dedicated OpenRouter API key, add a bounded credit balance, keep the pinned model pair, and run
    the real synthetic AI evaluation.
 3. Add and verify a Resend sending domain or subdomain.
 4. Create a restricted Resend sending key and store it outside Git.
@@ -383,7 +383,7 @@ next developer or founder must:
     cross-account isolation, reset reuse/session revocation, report integrity,
     verified deletion, retention trigger, restart persistence, and log review.
 12. Monitor Render credit, unbilled usage, database disk, web health,
-    Featherless inference, Resend delivery, and cron results throughout the
+    OpenRouter inference, Resend delivery, and cron results throughout the
     demo.
 13. After the demo, delete application cases/accounts, trigger retention,
     delete the web/cron/database resources, revoke both API keys, and confirm no
@@ -546,7 +546,7 @@ explicitly reviewed product/security redesign:
 ## Authoritative references inside the repository
 
 - Start with `README.md` for the product and local workflow.
-- Use `DEPLOYMENT.md` for exact Render, Featherless, Resend, smoke-test,
+- Use `DEPLOYMENT.md` for exact Render, OpenRouter, Resend, smoke-test,
   monitoring, and teardown steps.
 - Use `SECURITY.md` for implemented controls and known limits.
 - Use `PRIVACY.md` and `TERMS.md` for operator/legal review notes.

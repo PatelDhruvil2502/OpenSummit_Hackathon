@@ -26,7 +26,7 @@ These choices are canonical across fixtures, API contracts, UI, tests, and repor
   to six bounded JPEG page images plus bounded extracted page text to a
   configured server-side OpenAI-compatible inference provider. It never sends
   the raw complete PDF. The shipped Render
-  configuration targets Featherless, but keeps provider, model, and credential
+  configuration targets OpenRouter, but keeps provider, model, and credential
   choices explicit rather than silently selecting a model.
 - Searchable-PDF parsing, manual evidence entry, deterministic rules, reports,
   storage, account recovery, export, retention, and deletion remain local to

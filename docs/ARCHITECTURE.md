@@ -15,8 +15,8 @@ from deterministic product decisions:
 - With explicit per-upload consent and configured provider credentials, the
   Evidence Copilot renders at most six bounded PDF pages to JPEG (or bounds a
   directly uploaded image), includes bounded extracted page text when present,
-  and sends that multimodal task through a server-side OpenAI-compatible
-  endpoint. It never sends the complete raw PDF.
+  and sends that multimodal task through OpenRouter's server-side
+  OpenAI-compatible endpoint. It never sends the complete raw PDF.
   The extraction pass proposes structured facts, pay periods, deductions, and
   citations. A distinct verifier pass must support or reject those proposals
   and may explicitly abstain.
@@ -91,12 +91,14 @@ AI extraction pass ---------> strict candidate schema
         deterministic rules and reporting
 ```
 
-`AI_EVIDENCE_API_KEY` is server-only. `AI_EVIDENCE_BASE_URL` defaults to the
-Featherless OpenAI-compatible API and the pinned default extraction model is
-`Qwen/Qwen3-VL-8B-Instruct`. `AI_EVIDENCE_VERIFIER_MODEL` can pin a different
+`OPENROUTER_API_KEY` is server-only. `AI_EVIDENCE_BASE_URL` defaults to the
+OpenRouter OpenAI-compatible API and the pinned default extraction model is
+`qwen/qwen3-vl-8b-instruct`. `AI_EVIDENCE_VERIFIER_MODEL` can pin a different
 verifier and otherwise uses the extraction model. Each provider call defaults
-to a 45-second timeout clamped to 5-60 seconds, with at most one retry for a
-transient network/HTTP failure. The AI adapter is not an autonomous agent: it
+to a 45-second timeout clamped to 5-60 seconds, requests strict JSON Schema
+output, requires parameter-compatible provider endpoints, denies provider data
+collection by default, and permits at most one retry for a transient
+network/HTTP failure or extraction schema mismatch. The AI adapter is not an autonomous agent: it
 has no tool loop, retrieval corpus, browser, database connection, or write
 authority.
 

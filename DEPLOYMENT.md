@@ -5,7 +5,7 @@ WageShield deploys as a standard Next.js Node service. The production stack is:
 ```text
 Render Web Service (Next.js UI + API)
 ├── Render PostgreSQL (structured state + private document/report bytes)
-├── Featherless (two-pass multimodal evidence extraction + verification)
+├── OpenRouter (two-pass multimodal evidence extraction + verification)
 ├── Resend (password-reset email)
 └── Render Cron Job (15-minute expiry/deletion sweep)
 ```
@@ -24,7 +24,7 @@ You need:
 
 - the repository pushed to a GitHub, GitLab, or Bitbucket branch;
 - a Render account with the promotional credit applied;
-- a Featherless account and API key for the AI Evidence Copilot;
+- an OpenRouter account, API key, and credit balance for the AI Evidence Copilot;
 - a Resend API key and verified sender domain for password recovery;
 - the exact investor email addresses that may register;
 - real company, jurisdiction, support, privacy, and security details for the
@@ -62,9 +62,10 @@ Official references:
 - [Render Cron Jobs](https://render.com/docs/cronjobs)
 - [Render Terms of Service](https://render.com/terms)
 - [Resend domain verification](https://resend.com/docs/dashboard/domains/introduction)
-- [Featherless API quickstart](https://featherless.ai/docs/quickstart-guide)
-- [Featherless vision requests](https://featherless.ai/docs/vision)
-- [Featherless privacy and logging](https://featherless.ai/docs/privacy-and-logging)
+- [OpenRouter API quickstart](https://openrouter.ai/docs/quickstart)
+- [OpenRouter image inputs](https://openrouter.ai/docs/guides/overview/multimodal/image-understanding)
+- [OpenRouter structured outputs](https://openrouter.ai/docs/guides/features/structured-outputs)
+- [OpenRouter provider data controls](https://openrouter.ai/docs/guides/privacy/provider-logging/)
 
 ## 2. Validate the release locally
 
@@ -119,25 +120,32 @@ skip Resend, account recovery is not launch-ready.
 
 ## 4. Configure the AI Evidence Copilot
 
-The Render Blueprint uses Featherless's OpenAI-compatible chat-completions
-endpoint and a vision-language model. The application sends a model request
-only when the user explicitly consents for that upload.
+The Render Blueprint uses OpenRouter's OpenAI-compatible chat-completions
+endpoint, strict JSON Schema responses, and a pinned vision-language model. The
+application sends a model request only when the user explicitly consents for
+that upload.
 
-1. Sign in to [Featherless](https://featherless.ai/) and open **API Keys**.
-2. Create a key dedicated to this demo and store it in a password manager.
-3. Set `AI_EVIDENCE_API_KEY` locally or enter it when Render applies the
+1. Sign in to [OpenRouter](https://openrouter.ai/) and open **Keys**.
+2. Create a key dedicated to this demo, give it a small spending limit, and
+   store it in a password manager.
+3. Add enough OpenRouter credits for the paid pinned model, then set
+   `OPENROUTER_API_KEY` locally or enter it when Render applies the
    Blueprint. Never expose it through a `NEXT_PUBLIC_*` variable.
 4. Keep the checked-in defaults for the first verified run:
 
    ```dotenv
-   AI_EVIDENCE_BASE_URL=https://api.featherless.ai/v1
-   AI_EVIDENCE_MODEL=Qwen/Qwen3-VL-8B-Instruct
-   AI_EVIDENCE_VERIFIER_MODEL=Qwen/Qwen3-VL-8B-Instruct
+   AI_EVIDENCE_BASE_URL=https://openrouter.ai/api/v1
+   AI_EVIDENCE_MODEL=qwen/qwen3-vl-8b-instruct
+   AI_EVIDENCE_VERIFIER_MODEL=qwen/qwen3-vl-8b-instruct
    AI_EVIDENCE_TIMEOUT_MS=45000
+   AI_EVIDENCE_ALLOW_PROVIDER_DATA_COLLECTION=false
    ```
 
    The selected model is listed as vision-capable in the
-   [Featherless model catalog](https://featherless.ai/models/Qwen/Qwen3-VL-8B-Instruct).
+   [OpenRouter model catalog](https://openrouter.ai/qwen/qwen3-vl-8b-instruct),
+   and OpenRouter currently reports support for both image inputs and
+   structured outputs. The application requires providers that support every
+   requested parameter and denies data-collecting provider endpoints.
    A different verifier may be configured only after running the complete
    synthetic evaluation against that exact model pair. The timeout is clamped
    by the application to 5-60 seconds.
@@ -148,10 +156,19 @@ only when the user explicitly consents for that upload.
    screenshot, client bundle, log, repository, or support message.
 
 The provider receives at most six bounded JPEG page images plus bounded text
-for two separate calls; it does not receive the complete raw PDF. Featherless's
-current API policy says prompts and completions are processed in real time and
-not logged or stored. Treat that as a provider statement that must be rechecked,
-not as a WageShield guarantee. The hackathon demo must use synthetic records.
+for two separate calls; it does not receive the complete raw PDF. OpenRouter
+states that it does not retain prompts unless prompt logging is explicitly
+enabled, but the downstream model host has its own policy. WageShield sends
+`data_collection: "deny"` by default so OpenRouter only selects endpoints that
+do not collect the submitted content. Recheck the current endpoint policy and
+keep the hackathon demo synthetic-only.
+
+For a synthetic-only demo with no paid credits, an operator may deliberately
+set a currently available free vision model that supports structured outputs,
+for example `dots-studio/dots-3-note-preview:free`, and set
+`AI_EVIDENCE_ALLOW_PROVIDER_DATA_COLLECTION=true`. Free model availability and
+policies change. Never use that mode with a real employment record, and switch
+back to the pinned Qwen model plus `false` before any private beta.
 
 ## 5. Create the Render Blueprint
 
@@ -174,7 +191,7 @@ not as a WageShield guarantee. The hackathon demo must use synthetic records.
 
    | Variable | Value |
    | --- | --- |
-   | `AI_EVIDENCE_API_KEY` | Dedicated Featherless key; server-side secret |
+   | `OPENROUTER_API_KEY` | Dedicated OpenRouter key; server-side secret |
    | `RESEND_API_KEY` | Dedicated Resend key |
    | `EMAIL_FROM` | Verified sender string |
    | `EMAIL_REPLY_TO` | Monitored reply-capable address |
@@ -291,7 +308,7 @@ records.
     successful `retention_sweep_complete` event without private identifiers.
 12. Restart/redeploy the Web Service and confirm the account, remaining case,
     documents, and reports persist.
-13. Inspect Render, Featherless usage metadata, and Resend logs/events. Render
+13. Inspect Render, OpenRouter usage metadata, and Resend logs/events. Render
     and application logs must not contain raw
     documents, evidence excerpts, passwords, reset tokens, session cookies, or
     API tokens.
@@ -324,7 +341,7 @@ After the one-to-two-week demonstration:
 3. Delete the Render cron and web service.
 4. Delete the Render database only after completing any legally required export
    and confirming deletion.
-5. Revoke the Featherless and Resend API keys.
+5. Revoke the OpenRouter and Resend API keys.
 6. Confirm no active Render resource, provider key, or unbilled usage remains.
 
 ## 10. Launch boundary

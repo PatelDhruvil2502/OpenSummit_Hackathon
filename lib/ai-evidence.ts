@@ -11,9 +11,10 @@ import {
   type AiEvidenceRuntimeConfiguration,
 } from "./ai-evidence-core";
 import type { AiEvidencePreparedInput } from "./ai-evidence-input";
+import { publicAppOrigin } from "./runtime-flags";
 
-const DEFAULT_BASE_URL = "https://api.featherless.ai/v1";
-const DEFAULT_MODEL = "Qwen/Qwen3-VL-8B-Instruct";
+const DEFAULT_BASE_URL = "https://openrouter.ai/api/v1";
+const DEFAULT_MODEL = "qwen/qwen3-vl-8b-instruct";
 const DEFAULT_TIMEOUT_MS = 45_000;
 const MIN_TIMEOUT_MS = 5_000;
 const MAX_TIMEOUT_MS = 60_000;
@@ -50,7 +51,11 @@ function baseUrl(value: string | undefined): URL | null {
 }
 
 function providerLabel(url: URL | null): string {
-  return url?.hostname === "api.featherless.ai" ? "Featherless" : "OpenAI-compatible";
+  return url?.hostname === "openrouter.ai" ? "OpenRouter" : "OpenAI-compatible";
+}
+
+function enabled(value: string | undefined): boolean {
+  return value === "1" || value?.toLocaleLowerCase("en-US") === "true";
 }
 
 function requestTimeout(value: string | undefined): number {
@@ -66,7 +71,7 @@ function runtimeConfiguration(): AiEvidenceRuntimeConfiguration | null {
   const verifierModel = model
     ? modelName(env.AI_EVIDENCE_VERIFIER_MODEL, model)
     : null;
-  const apiKey = env.AI_EVIDENCE_API_KEY?.trim();
+  const apiKey = env.OPENROUTER_API_KEY?.trim();
   if (
     !url ||
     !model ||
@@ -84,6 +89,8 @@ function runtimeConfiguration(): AiEvidenceRuntimeConfiguration | null {
     model,
     verifierModel,
     timeoutMs: requestTimeout(env.AI_EVIDENCE_TIMEOUT_MS),
+    siteUrl: publicAppOrigin() ?? undefined,
+    allowProviderDataCollection: enabled(env.AI_EVIDENCE_ALLOW_PROVIDER_DATA_COLLECTION),
   };
 }
 

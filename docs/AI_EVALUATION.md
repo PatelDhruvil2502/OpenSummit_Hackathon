@@ -103,7 +103,7 @@ Use the exact model pair and commit intended for the demo:
 
 ```bash
 cp .env.example .env.local
-# Set AI_EVIDENCE_API_KEY in .env.local; never paste it into a command history.
+# Set OPENROUTER_API_KEY in .env.local; never paste it into a command history.
 npm run ai:evaluate -- \
   --predictions /tmp/wageshield-ai-predictions.json
 node scripts/ai-eval-score.mjs \

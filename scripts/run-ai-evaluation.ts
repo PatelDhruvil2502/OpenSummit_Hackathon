@@ -272,7 +272,7 @@ async function evaluateCase(item: GoldCase) {
 async function main(): Promise<void> {
   const arguments_ = parseArguments(process.argv.slice(2));
   if (!aiEvidenceIsConfigured()) {
-    fail("AI Evidence Copilot is not configured. Set AI_EVIDENCE_API_KEY server-side; no artifact was written.");
+    fail("AI Evidence Copilot is not configured. Set OPENROUTER_API_KEY server-side; no artifact was written.");
   }
   const gold = validateGold(JSON.parse(await readFile(arguments_.gold, "utf8")) as unknown);
   const configuration = aiEvidenceConfiguration();
