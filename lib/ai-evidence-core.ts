@@ -3,7 +3,7 @@ import { z } from "zod";
 import type { AiEvidencePreparedInput } from "./ai-evidence-input";
 import { parseDollarsToCents } from "./money";
 
-export const AI_EVIDENCE_PROMPT_VERSION = "wageshield-evidence-extraction-v3";
+export const AI_EVIDENCE_PROMPT_VERSION = "wageshield-evidence-extraction-v4";
 export const AI_EVIDENCE_VERIFIER_PROMPT_VERSION = "wageshield-evidence-grounding-v1";
 
 const MAX_CANDIDATES = 60;
@@ -63,7 +63,7 @@ export const AiFactCandidateSchema = z
     label: z.string().trim().min(1).max(120),
     raw_value: z.string().trim().min(1).max(240),
     normalized_value: z.string().trim().min(1).max(240).describe(
-      "For annual wage types, a digit-only string containing integer cents; otherwise a cleaned supported value.",
+      "For annual wage types, a digit-only string containing integer cents. For pay frequency, one of WEEKLY, BIWEEKLY, SEMI-MONTHLY, MONTHLY, or ANNUAL. Otherwise, a cleaned supported value.",
     ),
     confidence: z.number().min(0).max(0.99),
     evidence: EvidenceSchema,
@@ -314,6 +314,18 @@ function annualDollarsToCents(value: string): number | null {
   }
 }
 
+function canonicalPayFrequency(value: string): string | null {
+  const compact = value.trim().toUpperCase().replace(/[\s_-]+/g, "");
+  const supported: Record<string, string> = {
+    WEEKLY: "WEEKLY",
+    BIWEEKLY: "BIWEEKLY",
+    SEMIMONTHLY: "SEMI-MONTHLY",
+    MONTHLY: "MONTHLY",
+    ANNUAL: "ANNUAL",
+  };
+  return supported[compact] ?? null;
+}
+
 function normalizeExtractionValue(value: unknown): { value: unknown; changed: boolean } {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { value, changed: false };
@@ -324,6 +336,26 @@ function normalizeExtractionValue(value: unknown): { value: unknown; changed: bo
   const facts = root.facts.map((entry) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
     const candidate = entry as Record<string, unknown>;
+    if (candidate.type === "PAY_FREQUENCY") {
+      if (
+        typeof candidate.raw_value !== "string" ||
+        typeof candidate.normalized_value !== "string"
+      ) {
+        return entry;
+      }
+      const rawFrequency = canonicalPayFrequency(candidate.raw_value);
+      const normalizedFrequency = canonicalPayFrequency(candidate.normalized_value);
+      if (
+        rawFrequency === null ||
+        normalizedFrequency === null ||
+        rawFrequency !== normalizedFrequency ||
+        candidate.normalized_value === normalizedFrequency
+      ) {
+        return entry;
+      }
+      changed = true;
+      return { ...candidate, normalized_value: normalizedFrequency };
+    }
     if (
       candidate.type !== "LCA_WAGE_ANNUAL_CENTS" &&
       candidate.type !== "OFFER_WAGE_ANNUAL_CENTS"
@@ -743,7 +775,7 @@ export async function executeAiEvidenceCopilot(
           ? ["The extraction model needed one schema-conformance retry before its output passed validation."]
           : []),
         ...(valueNormalizationUsed
-          ? ["An annual-wage display value was deterministically normalized to integer cents before validation."]
+          ? ["A supported display value was deterministically normalized to its canonical schema format before validation."]
           : []),
       ],
     };
@@ -853,7 +885,7 @@ export async function executeAiEvidenceCopilot(
         ? ["The extraction model needed one schema-conformance retry before its output passed validation."]
         : []),
       ...(valueNormalizationUsed
-        ? ["An annual-wage display value was deterministically normalized to integer cents before validation."]
+        ? ["A supported display value was deterministically normalized to its canonical schema format before validation."]
         : []),
     ],
   };

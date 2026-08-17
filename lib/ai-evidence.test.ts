@@ -279,7 +279,48 @@ test("deterministically converts a supported annual-dollar display value to cent
   assert.equal(result.facts[0]?.normalized_value, "12000000");
   assert.equal(result.valueNormalizationUsed, true);
   assert.equal(result.schemaRetryUsed, false);
-  assert.ok(result.warnings.some((warning) => warning.includes("normalized to integer cents")));
+  assert.ok(result.warnings.some((warning) => warning.includes("deterministically normalized")));
+});
+
+test("deterministically canonicalizes a supported pay-frequency display value", async () => {
+  const frequencyInput: AiEvidencePreparedInput = {
+    ...preparedInput,
+    pages: [{
+      ...preparedInput.pages[0],
+      text: `${preparedInput.pages[0].text}\nPay frequency: Semi-monthly`,
+    }],
+  };
+  const displayedFrequency = extractionOutput();
+  displayedFrequency.facts.push({
+    candidate_id: "fact_frequency",
+    type: "PAY_FREQUENCY",
+    label: "Pay frequency",
+    raw_value: "Semi-monthly",
+    normalized_value: "semi_monthly",
+    confidence: 0.88,
+    evidence: {
+      page: 1,
+      exact_excerpt: "Pay frequency: Semi-monthly",
+    },
+    uncertainty: "",
+  });
+  const verification = verifierOutput();
+  verification.decisions.push({
+    candidate_id: "fact_frequency",
+    verdict: "VERIFIED",
+    evidence_page: 1,
+    exact_excerpt: "Pay frequency: Semi-monthly",
+    reason_code: null,
+    reason: "The cited page visibly supports the candidate.",
+  });
+  const responses = [providerResponse(displayedFrequency), providerResponse(verification)];
+  const result = await executeAiEvidenceCopilot(frequencyInput, runtime, {
+    fetchImpl: async () => responses.shift() as Response,
+  });
+  assert.equal(result.verifiedCount, 2);
+  assert.equal(result.facts[1]?.normalized_value, "SEMI-MONTHLY");
+  assert.equal(result.valueNormalizationUsed, true);
+  assert.equal(result.schemaRetryUsed, false);
 });
 
 test("rejects annual-wage normalization that disagrees with the visible raw value", async () => {
