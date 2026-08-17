@@ -247,6 +247,24 @@ async function requestedAiExtraction(
         "No AI candidate passed grounding verification. Local extraction or manual transcription remains available.",
       );
     }
+    // Content-free operational event. The run ID is an AI-run trace shown in
+    // the UI; it is not a user, case, or document identifier.
+    console.info(
+      JSON.stringify({
+        event: "ai_evidence_completed",
+        run_id: result.runId,
+        status,
+        provider: result.provider,
+        model: result.model,
+        verifier_model: result.verifierModel,
+        input_mode: result.inputMode,
+        candidate_count: result.candidateCount,
+        verified_count: result.verifiedCount,
+        rejected_count: result.rejectedCount,
+        abstention_count: result.abstentionCount,
+        schema_retry_used: result.schemaRetryUsed,
+      }),
+    );
     return {
       result,
       metadata: {
@@ -275,6 +293,8 @@ async function requestedAiExtraction(
         model: configuration.model,
         verifier_model: configuration.verifierModel,
         input_mode: inputMode ?? "NOT_PREPARED",
+        schema_issues:
+          error instanceof AiEvidenceCopilotError ? error.diagnostics : [],
       }),
     );
     return {

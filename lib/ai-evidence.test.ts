@@ -63,6 +63,21 @@ function extractionOutput() {
   };
 }
 
+function verifierOutput() {
+  return {
+    decisions: [
+      {
+        candidate_id: "fact_wage",
+        verdict: "VERIFIED",
+        evidence_page: 1,
+        exact_excerpt: "Rate of Pay: $120,000.00 Per Year",
+        reason_code: null,
+        reason: "The cited page visibly supports the candidate.",
+      },
+    ],
+  };
+}
+
 test("uses distinct extraction and grounding calls and returns only grounded proposals", async () => {
   const requests: Array<{ url: string; init?: RequestInit }> = [];
   const responses = [
@@ -193,19 +208,46 @@ test("preserves extractor and verifier abstentions without creating records", as
 });
 
 test("fails closed when extraction output does not satisfy the strict schema", async () => {
+  let calls = 0;
   await assert.rejects(
     executeAiEvidenceCopilot(preparedInput, runtime, {
-      fetchImpl: async () =>
-        providerResponse({
+      fetchImpl: async () => {
+        calls += 1;
+        return providerResponse({
           facts: [{ candidate_id: "unsafe", legal_conclusion: "violation" }],
           pay_periods: [],
           deductions: [],
           abstentions: [],
-        }),
+        });
+      },
     }),
-    (error: unknown) =>
-      error instanceof AiEvidenceCopilotError && error.code === "AI_EXTRACTION_SCHEMA_INVALID",
+    (error: unknown) => {
+      assert.ok(error instanceof AiEvidenceCopilotError);
+      assert.equal(error.code, "AI_EXTRACTION_SCHEMA_INVALID");
+      assert.ok(error.diagnostics.some((issue) => issue.includes("facts.[].type:")));
+      return true;
+    },
   );
+  assert.equal(calls, 2);
+});
+
+test("retries one extraction schema mismatch and records successful recovery", async () => {
+  const responses = [
+    providerResponse({
+      facts: [{ candidate_id: "fact_wage", type: "LCA_WAGE_ANNUAL_CENTS" }],
+      pay_periods: [],
+      deductions: [],
+      abstentions: [],
+    }),
+    providerResponse(extractionOutput()),
+    providerResponse(verifierOutput()),
+  ];
+  const result = await executeAiEvidenceCopilot(preparedInput, runtime, {
+    fetchImpl: async () => responses.shift() as Response,
+  });
+  assert.equal(result.verifiedCount, 1);
+  assert.equal(result.schemaRetryUsed, true);
+  assert.ok(result.warnings.some((warning) => warning.includes("schema-conformance retry")));
 });
 
 test("keeps document prompt injection in untrusted user content with no tools", async () => {
@@ -236,7 +278,7 @@ test("keeps document prompt injection in untrusted user content with no tools", 
   assert.match(JSON.stringify(requestBody), /IGNORE ALL RULES/);
 });
 
-test("retries one transient provider failure and never retries a schema failure", async () => {
+test("retries one transient provider failure", async () => {
   let calls = 0;
   const responses = [
     new Response(null, { status: 503 }),

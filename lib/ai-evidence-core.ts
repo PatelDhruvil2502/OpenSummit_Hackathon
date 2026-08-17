@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import type { AiEvidencePreparedInput } from "./ai-evidence-input";
 
-export const AI_EVIDENCE_PROMPT_VERSION = "wageshield-evidence-extraction-v1";
+export const AI_EVIDENCE_PROMPT_VERSION = "wageshield-evidence-extraction-v2";
 export const AI_EVIDENCE_VERIFIER_PROMPT_VERSION = "wageshield-evidence-grounding-v1";
 
 const MAX_CANDIDATES = 60;
@@ -246,6 +246,7 @@ export interface AiEvidenceCopilotResult {
   verifiedCount: number;
   rejectedCount: number;
   abstentionCount: number;
+  schemaRetryUsed: boolean;
   facts: VerifiedAiFact[];
   payPeriods: VerifiedAiPayPeriod[];
   deductions: VerifiedAiDeduction[];
@@ -261,10 +262,23 @@ export interface AiEvidenceAbstention {
 }
 
 export class AiEvidenceCopilotError extends Error {
-  constructor(readonly code: string) {
+  constructor(
+    readonly code: string,
+    readonly diagnostics: readonly string[] = [],
+  ) {
     super(code);
     this.name = "AiEvidenceCopilotError";
   }
+}
+
+function schemaIssueSignatures(error: z.ZodError): string[] {
+  const signatures = error.issues.map((issue) => {
+    const path = issue.path
+      .map((segment) => (typeof segment === "number" ? "[]" : segment))
+      .join(".");
+    return `${path || "$"}:${issue.code}`;
+  });
+  return [...new Set(signatures)].slice(0, 12);
 }
 
 type FetchImplementation = (
@@ -310,7 +324,9 @@ function extractionSystemPrompt(): string {
 
 This is evidence transcription, not legal advice. Do not decide compliance, violations, eligibility, liability, or what anyone is owed. Never calculate a legal conclusion. Do not infer missing values. When a material field is unclear, omit it and add an abstention.
 
-Return one JSON object and nothing else. It must have exactly these arrays: facts, pay_periods, deductions, abstentions.
+Return one JSON object and nothing else. It must have exactly these four required arrays: facts, pay_periods, deductions, abstentions. Include an empty array when a category has no supported candidates. Do not add any other properties at any level.
+
+JSON types are strict: candidate_id, type, label, raw_value, normalized_value, uncertainty, descriptions, dates, excerpts, reasons, and reason codes are strings; page and all *_cents fields are JSON numbers; confidence is a JSON number from 0 through 0.99; an abstention page may be a JSON number or null. For annual-wage facts, normalized_value is still a JSON string containing digits only, such as "8200000".
 
 Fact: {"candidate_id":"fact_1","type":"LCA_WAGE_ANNUAL_CENTS|OFFER_WAGE_ANNUAL_CENTS|LCA_WORKSITE|OFFER_WORKSITE|CURRENT_WORKSITE|EMPLOYER_NAME|POSITION_TITLE|PAY_FREQUENCY","label":"short label","raw_value":"visible value","normalized_value":"annual wage as integer cents, one supported frequency, or cleaned visible text","confidence":0.0,"evidence":{"page":1,"exact_excerpt":"verbatim transcription from that page"},"uncertainty":"brief limitation or empty string"}.
 Pay period: {"candidate_id":"period_1","start":"YYYY-MM-DD","end":"YYYY-MM-DD","pay_date":"YYYY-MM-DD","ordinary_base_cents":0,"gross_cents":0,"confidence":0.0,"evidence":{"page":1,"exact_excerpt":"verbatim text containing all values"},"uncertainty":"brief limitation or empty string"}.
@@ -526,7 +542,7 @@ export async function executeAiEvidenceCopilot(
   options: ExecuteOptions = {},
 ): Promise<AiEvidenceCopilotResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
-  const extractionValue = await requestChatCompletion(
+  let extractionValue = await requestChatCompletion(
     runtime,
     runtime.model,
     extractionSystemPrompt(),
@@ -537,8 +553,31 @@ export async function executeAiEvidenceCopilot(
     4_500,
     fetchImpl,
   );
-  const extraction = AiExtractionOutputSchema.safeParse(extractionValue);
-  if (!extraction.success) throw new AiEvidenceCopilotError("AI_EXTRACTION_SCHEMA_INVALID");
+  let extraction = AiExtractionOutputSchema.safeParse(extractionValue);
+  let extractionSchemaRetryUsed = false;
+  if (!extraction.success) {
+    const firstIssues = schemaIssueSignatures(extraction.error);
+    extractionValue = await requestChatCompletion(
+      runtime,
+      runtime.model,
+      extractionSystemPrompt(),
+      pageContent(
+        input,
+        `Document type: ${input.documentType}. Start the extraction again from the supplied ${input.pages.length} page image(s). The previous response was discarded because it did not match the required JSON schema. Correct these content-free schema issue signatures: ${firstIssues.join(", ")}.`,
+      ),
+      4_500,
+      fetchImpl,
+    );
+    extraction = AiExtractionOutputSchema.safeParse(extractionValue);
+    if (!extraction.success) {
+      const retryIssues = schemaIssueSignatures(extraction.error);
+      throw new AiEvidenceCopilotError("AI_EXTRACTION_SCHEMA_INVALID", [
+        ...firstIssues.map((issue) => `first/${issue}`),
+        ...retryIssues.map((issue) => `retry/${issue}`),
+      ].slice(0, 16));
+    }
+    extractionSchemaRetryUsed = true;
+  }
   const candidates = allCandidates(extraction.data);
   const availablePages = new Set(input.pages.map((page) => page.page));
   if (candidates.some((candidate) => !availablePages.has(candidate.evidence.page))) {
@@ -558,6 +597,7 @@ export async function executeAiEvidenceCopilot(
       verifiedCount: 0,
       rejectedCount: 0,
       abstentionCount: extraction.data.abstentions.length,
+      schemaRetryUsed: extractionSchemaRetryUsed,
       facts: [],
       payPeriods: [],
       deductions: [],
@@ -567,7 +607,12 @@ export async function executeAiEvidenceCopilot(
         page: abstention.page,
         stage: "EXTRACTION" as const,
       })),
-      warnings: [...input.warnings],
+      warnings: [
+        ...input.warnings,
+        ...(extractionSchemaRetryUsed
+          ? ["The extraction model needed one schema-conformance retry before its output passed validation."]
+          : []),
+      ],
     };
   }
 
@@ -583,7 +628,12 @@ export async function executeAiEvidenceCopilot(
     fetchImpl,
   );
   const verification = AiVerificationOutputSchema.safeParse(verificationValue);
-  if (!verification.success) throw new AiEvidenceCopilotError("AI_VERIFICATION_SCHEMA_INVALID");
+  if (!verification.success) {
+    throw new AiEvidenceCopilotError(
+      "AI_VERIFICATION_SCHEMA_INVALID",
+      schemaIssueSignatures(verification.error),
+    );
+  }
 
   const candidateIds = new Set(candidates.map((candidate) => candidate.candidate_id));
   if (verification.data.decisions.some((decision) => !candidateIds.has(decision.candidate_id))) {
@@ -657,10 +707,16 @@ export async function executeAiEvidenceCopilot(
     verifiedCount: facts.length + payPeriods.length + deductions.length,
     rejectedCount,
     abstentionCount: extraction.data.abstentions.length + verifierAbstentions,
+    schemaRetryUsed: extractionSchemaRetryUsed,
     facts,
     payPeriods,
     deductions,
     abstentions,
-    warnings: [...input.warnings],
+    warnings: [
+      ...input.warnings,
+      ...(extractionSchemaRetryUsed
+        ? ["The extraction model needed one schema-conformance retry before its output passed validation."]
+        : []),
+    ],
   };
 }
