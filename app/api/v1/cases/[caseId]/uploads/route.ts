@@ -263,6 +263,7 @@ async function requestedAiExtraction(
         rejected_count: result.rejectedCount,
         abstention_count: result.abstentionCount,
         schema_retry_used: result.schemaRetryUsed,
+        value_normalization_used: result.valueNormalizationUsed,
       }),
     );
     return {

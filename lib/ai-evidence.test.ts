@@ -265,6 +265,37 @@ test("retries one extraction schema mismatch and records successful recovery", a
   assert.ok(result.warnings.some((warning) => warning.includes("schema-conformance retry")));
 });
 
+test("deterministically converts a supported annual-dollar display value to cents", async () => {
+  const displayedDollars = extractionOutput();
+  displayedDollars.facts[0].normalized_value = "$120,000.00 per year";
+  const responses = [
+    providerResponse(displayedDollars),
+    providerResponse(verifierOutput()),
+  ];
+  const result = await executeAiEvidenceCopilot(preparedInput, runtime, {
+    fetchImpl: async () => responses.shift() as Response,
+  });
+  assert.equal(result.verifiedCount, 1);
+  assert.equal(result.facts[0]?.normalized_value, "12000000");
+  assert.equal(result.valueNormalizationUsed, true);
+  assert.equal(result.schemaRetryUsed, false);
+  assert.ok(result.warnings.some((warning) => warning.includes("normalized to integer cents")));
+});
+
+test("rejects annual-wage normalization that disagrees with the visible raw value", async () => {
+  const mismatched = extractionOutput();
+  mismatched.facts[0].normalized_value = "$130,000.00 per year";
+  await assert.rejects(
+    executeAiEvidenceCopilot(preparedInput, runtime, {
+      fetchImpl: async () => providerResponse(mismatched),
+    }),
+    (error: unknown) =>
+      error instanceof AiEvidenceCopilotError &&
+      error.code === "AI_EXTRACTION_SCHEMA_INVALID" &&
+      error.diagnostics.some((issue) => issue.includes("normalized_value:custom")),
+  );
+});
+
 test("keeps document prompt injection in untrusted user content with no tools", async () => {
   let requestBody: Record<string, unknown> | undefined;
   const injectedInput: AiEvidencePreparedInput = {

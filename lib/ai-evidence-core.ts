@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import type { AiEvidencePreparedInput } from "./ai-evidence-input";
+import { parseDollarsToCents } from "./money";
 
-export const AI_EVIDENCE_PROMPT_VERSION = "wageshield-evidence-extraction-v2";
+export const AI_EVIDENCE_PROMPT_VERSION = "wageshield-evidence-extraction-v3";
 export const AI_EVIDENCE_VERIFIER_PROMPT_VERSION = "wageshield-evidence-grounding-v1";
 
 const MAX_CANDIDATES = 60;
@@ -61,7 +62,9 @@ export const AiFactCandidateSchema = z
     type: FactTypeSchema,
     label: z.string().trim().min(1).max(120),
     raw_value: z.string().trim().min(1).max(240),
-    normalized_value: z.string().trim().min(1).max(240),
+    normalized_value: z.string().trim().min(1).max(240).describe(
+      "For annual wage types, a digit-only string containing integer cents; otherwise a cleaned supported value.",
+    ),
     confidence: z.number().min(0).max(0.99),
     evidence: EvidenceSchema,
     uncertainty: z.string().trim().max(300),
@@ -78,6 +81,20 @@ export const AiFactCandidateSchema = z
         path: ["normalized_value"],
         message: "Annual wages must be normalized to integer cents",
       });
+    }
+    if (
+      (candidate.type === "LCA_WAGE_ANNUAL_CENTS" ||
+        candidate.type === "OFFER_WAGE_ANNUAL_CENTS") &&
+      /^\d{1,12}$/.test(candidate.normalized_value)
+    ) {
+      const rawCents = annualDollarsToCents(candidate.raw_value);
+      if (rawCents !== null && Number(candidate.normalized_value) !== rawCents) {
+        context.addIssue({
+          code: "custom",
+          path: ["normalized_value"],
+          message: "Annual wage cents must agree with the visible raw value",
+        });
+      }
     }
     if (
       candidate.type === "PAY_FREQUENCY" &&
@@ -250,6 +267,7 @@ export interface AiEvidenceCopilotResult {
   rejectedCount: number;
   abstentionCount: number;
   schemaRetryUsed: boolean;
+  valueNormalizationUsed: boolean;
   facts: VerifiedAiFact[];
   payPeriods: VerifiedAiPayPeriod[];
   deductions: VerifiedAiDeduction[];
@@ -282,6 +300,58 @@ function schemaIssueSignatures(error: z.ZodError): string[] {
     return `${path || "$"}:${issue.code}`;
   });
   return [...new Set(signatures)].slice(0, 12);
+}
+
+function annualDollarsToCents(value: string): number | null {
+  const match = /^(?:USD\s*)?(?:US\$|\$)?\s*((?:\d{1,3}(?:,\d{3})+|\d{1,9})(?:\.\d{1,2})?)\s*(?:USD)?\s*(?:(?:per|\/)\s*year|annually|annual|yearly)?$/i.exec(
+    value.trim(),
+  );
+  if (!match) return null;
+  try {
+    return parseDollarsToCents(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeExtractionValue(value: unknown): { value: unknown; changed: boolean } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { value, changed: false };
+  }
+  const root = value as Record<string, unknown>;
+  if (!Array.isArray(root.facts)) return { value, changed: false };
+  let changed = false;
+  const facts = root.facts.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+    const candidate = entry as Record<string, unknown>;
+    if (
+      candidate.type !== "LCA_WAGE_ANNUAL_CENTS" &&
+      candidate.type !== "OFFER_WAGE_ANNUAL_CENTS"
+    ) {
+      return entry;
+    }
+    if (typeof candidate.raw_value !== "string" || typeof candidate.normalized_value !== "string") {
+      return entry;
+    }
+    const rawCents = annualDollarsToCents(candidate.raw_value);
+    if (rawCents === null) return entry;
+    const normalized = candidate.normalized_value.trim();
+    if (/^\d{1,12}$/.test(normalized)) {
+      const numeric = Number(normalized);
+      if (numeric === rawCents) return entry;
+      if (numeric * 100 !== rawCents) return entry;
+    } else {
+      const explicitCents = /^(\d{1,12})\s*(?:cents?|¢)$/i.exec(normalized);
+      if (explicitCents) {
+        if (Number(explicitCents[1]) !== rawCents) return entry;
+      } else if (annualDollarsToCents(normalized) !== rawCents) {
+        return entry;
+      }
+    }
+    changed = true;
+    return { ...candidate, normalized_value: String(rawCents) };
+  });
+  return changed ? { value: { ...root, facts }, changed } : { value, changed };
 }
 
 type FetchImplementation = (
@@ -605,6 +675,9 @@ export async function executeAiEvidenceCopilot(
     EXTRACTION_RESPONSE_FORMAT,
     fetchImpl,
   );
+  let normalizedExtraction = normalizeExtractionValue(extractionValue);
+  extractionValue = normalizedExtraction.value;
+  let valueNormalizationUsed = normalizedExtraction.changed;
   let extraction = AiExtractionOutputSchema.safeParse(extractionValue);
   let extractionSchemaRetryUsed = false;
   if (!extraction.success) {
@@ -621,6 +694,9 @@ export async function executeAiEvidenceCopilot(
       EXTRACTION_RESPONSE_FORMAT,
       fetchImpl,
     );
+    normalizedExtraction = normalizeExtractionValue(extractionValue);
+    extractionValue = normalizedExtraction.value;
+    valueNormalizationUsed ||= normalizedExtraction.changed;
     extraction = AiExtractionOutputSchema.safeParse(extractionValue);
     if (!extraction.success) {
       const retryIssues = schemaIssueSignatures(extraction.error);
@@ -651,6 +727,7 @@ export async function executeAiEvidenceCopilot(
       rejectedCount: 0,
       abstentionCount: extraction.data.abstentions.length,
       schemaRetryUsed: extractionSchemaRetryUsed,
+      valueNormalizationUsed,
       facts: [],
       payPeriods: [],
       deductions: [],
@@ -664,6 +741,9 @@ export async function executeAiEvidenceCopilot(
         ...input.warnings,
         ...(extractionSchemaRetryUsed
           ? ["The extraction model needed one schema-conformance retry before its output passed validation."]
+          : []),
+        ...(valueNormalizationUsed
+          ? ["An annual-wage display value was deterministically normalized to integer cents before validation."]
           : []),
       ],
     };
@@ -762,6 +842,7 @@ export async function executeAiEvidenceCopilot(
     rejectedCount,
     abstentionCount: extraction.data.abstentions.length + verifierAbstentions,
     schemaRetryUsed: extractionSchemaRetryUsed,
+    valueNormalizationUsed,
     facts,
     payPeriods,
     deductions,
@@ -770,6 +851,9 @@ export async function executeAiEvidenceCopilot(
       ...input.warnings,
       ...(extractionSchemaRetryUsed
         ? ["The extraction model needed one schema-conformance retry before its output passed validation."]
+        : []),
+      ...(valueNormalizationUsed
+        ? ["An annual-wage display value was deterministically normalized to integer cents before validation."]
         : []),
     ],
   };
