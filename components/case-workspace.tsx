@@ -724,15 +724,15 @@ const AI_RUN_STATUS_META: Record<
   { label: string; title: string; description: string; tone: string }
 > = {
   VERIFIED: {
-    label: "Verified pass complete",
-    title: "AI proposals grounded to cited evidence",
-    description: "A separate grounding pass checked each surviving proposal against the cited page. Human confirmation is still required.",
+    label: "Verified by AI",
+    title: "AI review completed",
+    description: "AI proposed cited values for review. Human confirmation is still required.",
     tone: "verified",
   },
   PARTIAL: {
-    label: "Partial verification",
-    title: "Only grounded AI proposals survived",
-    description: "The grounding pass accepted some candidates and rejected or abstained on the rest. Human confirmation is still required.",
+    label: "Partially verified by AI",
+    title: "AI review completed with partial results",
+    description: "Only supported AI proposals are shown. Human confirmation is still required.",
     tone: "partial",
   },
   ABSTAINED: {
@@ -761,16 +761,8 @@ const AI_RUN_STATUS_META: Record<
   },
 };
 
-function aiInputModeLabel(value: AiDocumentExtraction["inputMode"]): string {
-  if (value === "PDF_RENDERED_PAGES") return "Rendered PDF pages";
-  if (value === "PDF_TEXT") return "PDF text";
-  if (value === "IMAGE") return "Document image";
-  return "No model input";
-}
-
 function AiDocumentRun({ run, documentName }: { run: AiDocumentExtraction; documentName: string }) {
   const status = AI_RUN_STATUS_META[run.status];
-  const showModel = Boolean(run.provider || run.model) && run.status !== "NOT_REQUESTED";
   const showCounts = ["VERIFIED", "PARTIAL", "ABSTAINED"].includes(run.status);
   return (
     <section className={`ai-run-panel ai-run-${status.tone}`} aria-label={`AI processing record for ${documentName}`}>
@@ -786,22 +778,11 @@ function AiDocumentRun({ run, documentName }: { run: AiDocumentExtraction; docum
         <em className={`ai-run-status ai-run-status-${status.tone}`}>{status.label}</em>
       </div>
       {showCounts && (
-        <dl className="ai-run-counts" aria-label="AI verification results">
+        <dl className="ai-run-counts" aria-label="AI review results">
           <div><dt>Candidates</dt><dd>{run.candidateCount}</dd></div>
-          <div><dt>Grounded</dt><dd>{run.verifiedCount}</dd></div>
+          <div><dt>Verified</dt><dd>{run.verifiedCount}</dd></div>
           <div><dt>Rejected</dt><dd>{run.rejectedCount}</dd></div>
           <div><dt>Abstained</dt><dd>{run.abstentionCount}</dd></div>
-        </dl>
-      )}
-      {showModel && (
-        <dl className="ai-run-metadata">
-          <div><dt>External provider</dt><dd>{run.provider || "Not reported"}</dd></div>
-          <div><dt>Extraction model</dt><dd>{run.model || "No response"}</dd></div>
-          <div><dt>Verifier model</dt><dd>{run.verifierModel || "No response"}</dd></div>
-          <div><dt>Model input</dt><dd>{aiInputModeLabel(run.inputMode)}</dd></div>
-          <div><dt>Prompt versions</dt><dd>{run.promptVersion} · verifier {run.verifierPromptVersion}</dd></div>
-          <div><dt>Completed</dt><dd>{friendlyDateTime(run.completedAt)}</dd></div>
-          {run.runId && <div><dt>Trace</dt><dd>{run.runId.slice(0, 12)}…</dd></div>}
         </dl>
       )}
       {run.deterministicFallbackUsed && (
@@ -1155,16 +1136,8 @@ function ProposalProvenance({
   return (
     <div className="proposal-provenance proposal-provenance-ai">
       <div className="proposal-provenance-badges">
-        <span className="proposal-origin-badge ai"><SearchCheck size={12} aria-hidden="true" /> AI proposed</span>
-        <span className="proposal-verified-badge"><BadgeCheck size={12} aria-hidden="true" /> Verifier grounded</span>
+        <span className="proposal-verified-badge"><BadgeCheck size={12} aria-hidden="true" /> Verified by AI</span>
       </div>
-      <p><strong>Verifier:</strong> {provenance.verifierReason}</p>
-      <dl>
-        <div><dt>Extraction</dt><dd>{provenance.provider} · {provenance.model}</dd></div>
-        <div><dt>Verification</dt><dd>{provenance.verifierModel}</dd></div>
-        <div><dt>Prompts</dt><dd>{provenance.promptVersion} · verifier {provenance.verifierPromptVersion}</dd></div>
-        <div><dt>Trace</dt><dd>{provenance.runId.slice(0, 10)}… / {provenance.candidateId.slice(0, 10)}…</dd></div>
-      </dl>
     </div>
   );
 }
@@ -1615,7 +1588,7 @@ function FactsTab({
                     <div><button type="button" className="button button-primary button-small" onClick={() => saveCorrection(selected)} disabled={saving || writesAreLocked}>{saving ? <LoaderCircle className="spin" size={13} /> : <Save size={13} />} Save correction</button><button type="button" className="button button-ghost button-small" onClick={() => setEditing("")}>Cancel</button></div>
                   </div>
                 ) : (
-                  <dl className="detail-list compact"><div><dt>Reviewed value</dt><dd>{selected.rawValue}</dd></div><div><dt>Normalized input</dt><dd>{selected.type.endsWith("_CENTS") && /^\d+$/.test(selected.normalizedValue) ? formatCents(Number(selected.normalizedValue)) : selected.normalizedValue}</dd></div><div><dt>Review status</dt><dd>{selected.reviewStatus.replaceAll("_", " ")}</dd></div><div><dt>Source method</dt><dd>{selected.aiProvenance ? "AI proposed · separately verified" : factOriginLabel(selected)}</dd></div><div><dt>Affects</dt><dd>{selected.affects.map(moduleLabel).join(", ")}</dd></div></dl>
+                  <dl className="detail-list compact"><div><dt>Reviewed value</dt><dd>{selected.rawValue}</dd></div><div><dt>Normalized input</dt><dd>{selected.type.endsWith("_CENTS") && /^\d+$/.test(selected.normalizedValue) ? formatCents(Number(selected.normalizedValue)) : selected.normalizedValue}</dd></div><div><dt>Review status</dt><dd>{selected.reviewStatus.replaceAll("_", " ")}</dd></div><div><dt>Source method</dt><dd>{selected.aiProvenance ? "Verified by AI" : factOriginLabel(selected)}</dd></div><div><dt>Affects</dt><dd>{selected.affects.map(moduleLabel).join(", ")}</dd></div></dl>
                 )}
               </div>
             </div>
