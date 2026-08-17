@@ -27,7 +27,7 @@ WageShield implements meaningful application controls, but this repository is no
   network failure returns to human review and never fabricates a result.
 - **Inference resource bounds:** Page count, render dimensions/pixels, text,
   response bytes, and candidate counts are bounded. Each provider request uses
-  a timeout clamped to 5-30 seconds (20 seconds by default) and has at most one
+  a timeout clamped to 5-60 seconds (45 seconds by default) and has at most one
   retry for a transient HTTP/network failure. Provider errors are sanitized
   before persistence or display.
 - **AI credential and provenance:** The provider API key is read only by the

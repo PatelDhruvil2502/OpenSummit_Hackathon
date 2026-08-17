@@ -133,14 +133,14 @@ only when the user explicitly consents for that upload.
    AI_EVIDENCE_BASE_URL=https://api.featherless.ai/v1
    AI_EVIDENCE_MODEL=Qwen/Qwen3-VL-8B-Instruct
    AI_EVIDENCE_VERIFIER_MODEL=Qwen/Qwen3-VL-8B-Instruct
-   AI_EVIDENCE_TIMEOUT_MS=20000
+   AI_EVIDENCE_TIMEOUT_MS=45000
    ```
 
    The selected model is listed as vision-capable in the
    [Featherless model catalog](https://featherless.ai/models/Qwen/Qwen3-VL-8B-Instruct).
    A different verifier may be configured only after running the complete
    synthetic evaluation against that exact model pair. The timeout is clamped
-   by the application to 5-30 seconds.
+   by the application to 5-60 seconds.
 5. Run one generated synthetic upload locally. Consent to AI processing and
    verify that the UI shows model provenance plus supported, rejected, or
    abstained evidence—not a hardcoded response.

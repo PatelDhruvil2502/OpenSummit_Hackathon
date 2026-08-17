@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   AI_EVIDENCE_PROMPT_VERSION,
   AI_EVIDENCE_VERIFIER_PROMPT_VERSION,
+  AiEvidenceCopilotError,
   aiEvidenceConfiguration,
   runAiEvidenceCopilot,
   type AiEvidenceCopilotResult,
@@ -261,7 +262,21 @@ async function requestedAiExtraction(
         warnings,
       },
     };
-  } catch {
+  } catch (error) {
+    const failureCode =
+      error instanceof AiEvidenceCopilotError ? error.code : "AI_EVIDENCE_INTERNAL_ERROR";
+    // Deliberately content-free: never log a user/case/document ID, provider
+    // response body, prompt, evidence excerpt, or credential.
+    console.error(
+      JSON.stringify({
+        event: "ai_evidence_failed",
+        code: failureCode,
+        provider: configuration.provider,
+        model: configuration.model,
+        verifier_model: configuration.verifierModel,
+        input_mode: inputMode ?? "NOT_PREPARED",
+      }),
+    );
     return {
       result: null,
       metadata: {
@@ -274,11 +289,51 @@ async function requestedAiExtraction(
         rejectedCount: 0,
         abstentionCount: 0,
         warnings: [
-          "AI processing did not complete, so no AI output was trusted. Local extraction or manual transcription remains available.",
+          aiFailureWarning(failureCode),
         ],
       },
     };
   }
+}
+
+function aiFailureWarning(code: string): string {
+  const guidance: Record<string, string> = {
+    AI_PROVIDER_BAD_REQUEST:
+      "The provider rejected the vision request format. The operator should inspect the content-free Render diagnostic and verify provider compatibility.",
+    AI_PROVIDER_AUTHENTICATION_FAILED:
+      "The provider rejected the server credential. The operator should verify or rotate the configured API key.",
+    AI_PROVIDER_ACCESS_DENIED:
+      "The provider account or plan cannot access the configured model. The operator should verify model access and account credit.",
+    AI_PROVIDER_MODEL_NOT_FOUND:
+      "The configured model ID was not found by the provider. The operator should verify the exact model ID.",
+    AI_PROVIDER_REQUEST_TOO_LARGE:
+      "The provider rejected the bounded page request as too large. Try a shorter document while the operator reviews the provider limit.",
+    AI_PROVIDER_TIMEOUT:
+      "The provider did not finish within the bounded timeout. Try again once; repeated timeouts require an operator review.",
+    AI_PROVIDER_TRANSIENT_ERROR:
+      "The provider reported a temporary capacity or rate-limit failure. Try again once after a short delay.",
+    AI_PROVIDER_UNAVAILABLE:
+      "The provider could not be reached. Try again once; repeated failures require an operator review.",
+    AI_PROVIDER_JSON_INVALID:
+      "The provider returned invalid JSON, so no AI output was trusted.",
+    AI_PROVIDER_SCHEMA_INVALID:
+      "The provider response did not match the expected chat-completions envelope, so no AI output was trusted.",
+    AI_MODEL_JSON_INVALID:
+      "The model did not return valid JSON, so no AI output was trusted.",
+    AI_MODEL_CONTENT_INVALID:
+      "The model returned empty or oversized content, so no AI output was trusted.",
+    AI_EXTRACTION_SCHEMA_INVALID:
+      "The extraction output failed the strict evidence schema, so no AI output was trusted.",
+    AI_EXTRACTION_PAGE_INVALID:
+      "The extraction output cited a page that was not supplied, so no AI output was trusted.",
+    AI_VERIFICATION_SCHEMA_INVALID:
+      "The grounding output failed the strict verification schema, so no AI output was trusted.",
+    AI_VERIFICATION_CANDIDATE_INVALID:
+      "The grounding output referenced an unknown candidate, so no AI output was trusted.",
+  };
+  const fallback =
+    "AI processing did not complete, so no AI output was trusted. Local extraction or manual transcription remains available.";
+  return `${guidance[code] ?? fallback} Diagnostic code: ${code}.`;
 }
 
 export async function POST(request: Request, context: Context) {

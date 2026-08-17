@@ -94,6 +94,8 @@ test("uses distinct extraction and grounding calls and returns only grounded pro
   const verifierRequest = JSON.parse(String(requests[1].init?.body));
   assert.equal(extractionRequest.model, "vision-extractor");
   assert.equal(verifierRequest.model, "independent-verifier");
+  assert.equal("response_format" in extractionRequest, false);
+  assert.equal("response_format" in verifierRequest, false);
   assert.notEqual(
     extractionRequest.messages[0].content,
     verifierRequest.messages[0].content,
@@ -260,6 +262,24 @@ test("retries one transient provider failure and never retries a schema failure"
   });
   assert.equal(calls, 3);
   assert.equal(result.rejectedCount, 1);
+});
+
+test("maps provider authentication, access, model, and request failures to safe codes", async () => {
+  const cases = [
+    [400, "AI_PROVIDER_BAD_REQUEST"],
+    [401, "AI_PROVIDER_AUTHENTICATION_FAILED"],
+    [403, "AI_PROVIDER_ACCESS_DENIED"],
+    [404, "AI_PROVIDER_MODEL_NOT_FOUND"],
+    [413, "AI_PROVIDER_REQUEST_TOO_LARGE"],
+  ] as const;
+  for (const [status, code] of cases) {
+    await assert.rejects(
+      executeAiEvidenceCopilot(preparedInput, runtime, {
+        fetchImpl: async () => new Response(null, { status }),
+      }),
+      (error: unknown) => error instanceof AiEvidenceCopilotError && error.code === code,
+    );
+  }
 });
 
 test("renders a bounded PDF page and retains its searchable text for grounding", async () => {

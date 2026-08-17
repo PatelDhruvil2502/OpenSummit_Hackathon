@@ -14,9 +14,9 @@ import type { AiEvidencePreparedInput } from "./ai-evidence-input";
 
 const DEFAULT_BASE_URL = "https://api.featherless.ai/v1";
 const DEFAULT_MODEL = "Qwen/Qwen3-VL-8B-Instruct";
-const DEFAULT_TIMEOUT_MS = 20_000;
+const DEFAULT_TIMEOUT_MS = 45_000;
 const MIN_TIMEOUT_MS = 5_000;
-const MAX_TIMEOUT_MS = 30_000;
+const MAX_TIMEOUT_MS = 60_000;
 
 export interface AiEvidenceConfiguration {
   configured: boolean;

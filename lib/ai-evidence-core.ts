@@ -11,6 +11,16 @@ const MAX_PROVIDER_RESPONSE_BYTES = 256 * 1024;
 const MAX_MODEL_CONTENT_CHARACTERS = 96_000;
 const TRANSIENT_PROVIDER_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 
+function providerFailureCode(status: number): string {
+  if (TRANSIENT_PROVIDER_STATUSES.has(status)) return "AI_PROVIDER_TRANSIENT_ERROR";
+  if (status === 400) return "AI_PROVIDER_BAD_REQUEST";
+  if (status === 401) return "AI_PROVIDER_AUTHENTICATION_FAILED";
+  if (status === 403) return "AI_PROVIDER_ACCESS_DENIED";
+  if (status === 404) return "AI_PROVIDER_MODEL_NOT_FOUND";
+  if (status === 413) return "AI_PROVIDER_REQUEST_TOO_LARGE";
+  return "AI_PROVIDER_REJECTED";
+}
+
 const FactTypeSchema = z.enum([
   "LCA_WAGE_ANNUAL_CENTS",
   "OFFER_WAGE_ANNUAL_CENTS",
@@ -418,7 +428,6 @@ async function requestChatCompletion(
           ],
           temperature: 0,
           max_tokens: maximumTokens,
-          response_format: { type: "json_object" },
         }),
         cache: "no-store",
         redirect: "error",
@@ -426,9 +435,7 @@ async function requestChatCompletion(
       });
       if (!response.ok) {
         await response.body?.cancel().catch(() => undefined);
-        lastCode = TRANSIENT_PROVIDER_STATUSES.has(response.status)
-          ? "AI_PROVIDER_TRANSIENT_ERROR"
-          : "AI_PROVIDER_REJECTED";
+        lastCode = providerFailureCode(response.status);
         if (attempt === 0 && TRANSIENT_PROVIDER_STATUSES.has(response.status)) continue;
         throw new AiEvidenceCopilotError(lastCode);
       }

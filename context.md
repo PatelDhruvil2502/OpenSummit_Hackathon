@@ -172,7 +172,7 @@ disk and revisit the storage architecture before a broader release.
 - The AI pipeline makes separate extraction and verification calls. Output is
   schema, count, page, excerpt, and grounding checked; failures and ambiguity
   return to the local/manual path rather than inventing a value.
-- AI calls default to a 20-second timeout clamped to 5-30 seconds and retry at
+- AI calls default to a 45-second timeout clamped to 5-60 seconds and retry at
   most once for transient network/HTTP failures. The model has no tools,
   database/storage credentials, retrieval corpus, or rule execution authority.
 - Extracted facts, pay periods, deductions, and events are saved as
@@ -334,7 +334,7 @@ The Blueprint pins these non-secret AI defaults:
 AI_EVIDENCE_BASE_URL=https://api.featherless.ai/v1
 AI_EVIDENCE_MODEL=Qwen/Qwen3-VL-8B-Instruct
 AI_EVIDENCE_VERIFIER_MODEL=Qwen/Qwen3-VL-8B-Instruct
-AI_EVIDENCE_TIMEOUT_MS=20000
+AI_EVIDENCE_TIMEOUT_MS=45000
 ```
 
 Changing either model requires a fresh synthetic evaluation. The verifier model

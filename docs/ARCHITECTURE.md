@@ -95,7 +95,7 @@ AI extraction pass ---------> strict candidate schema
 Featherless OpenAI-compatible API and the pinned default extraction model is
 `Qwen/Qwen3-VL-8B-Instruct`. `AI_EVIDENCE_VERIFIER_MODEL` can pin a different
 verifier and otherwise uses the extraction model. Each provider call defaults
-to a 20-second timeout clamped to 5-30 seconds, with at most one retry for a
+to a 45-second timeout clamped to 5-60 seconds, with at most one retry for a
 transient network/HTTP failure. The AI adapter is not an autonomous agent: it
 has no tool loop, retrieval corpus, browser, database connection, or write
 authority.

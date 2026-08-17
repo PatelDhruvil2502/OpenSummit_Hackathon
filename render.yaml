@@ -35,7 +35,7 @@ services:
       - key: AI_EVIDENCE_VERIFIER_MODEL
         value: Qwen/Qwen3-VL-8B-Instruct
       - key: AI_EVIDENCE_TIMEOUT_MS
-        value: "20000"
+        value: "45000"
       - key: RESEND_API_KEY
         sync: false
       - key: EMAIL_FROM
