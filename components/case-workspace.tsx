@@ -45,6 +45,8 @@ import { Brand } from "@/components/brand";
 import { formatCents, formatPercent } from "@/lib/money";
 import { RETENTION_POLICY, UPLOAD_POLICY } from "@/lib/product-config";
 import type {
+  AiDocumentExtraction,
+  AiEvidenceProvenance,
   CasePayload,
   DeductionObservation,
   DocumentType,
@@ -626,7 +628,7 @@ function OverviewTab({
     },
     {
       id: "findings" as const,
-      label: "Evidence comparison",
+      label: "Deterministic comparison",
       complete: Boolean(caseData.findings.length && caseData.lastAnalysisAt),
       detail: caseData.findings.length
         ? `${new Set(caseData.findings.map((finding) => finding.module)).size} of ${Object.keys(MODULE_META).length} modules complete`
@@ -645,7 +647,7 @@ function OverviewTab({
       <SectionTitle
         eyebrow="Case snapshot"
         title="A traceable view of the current record"
-        text="Nothing here is a legal conclusion. Each number and status can be opened back to the reviewed evidence."
+        text="AI may propose cited values, but only human-reviewed facts enter deterministic rules. Nothing here is a legal conclusion."
         action={
           <button
             type="button"
@@ -655,7 +657,7 @@ function OverviewTab({
             title={!analysisReady && !writesAreLocked ? analysisMessage : undefined}
           >
             {busy ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
-            {caseData.findings.length ? "Rerun comparisons" : "Run comparisons"}
+            {caseData.findings.length ? "Rerun deterministic checks" : "Run deterministic checks"}
           </button>
         }
       />
@@ -717,6 +719,103 @@ function OverviewTab({
   );
 }
 
+const AI_RUN_STATUS_META: Record<
+  AiDocumentExtraction["status"],
+  { label: string; title: string; description: string; tone: string }
+> = {
+  VERIFIED: {
+    label: "Verified pass complete",
+    title: "AI proposals grounded to cited evidence",
+    description: "A separate grounding pass checked each surviving proposal against the cited page. Human confirmation is still required.",
+    tone: "verified",
+  },
+  PARTIAL: {
+    label: "Partial verification",
+    title: "Only grounded AI proposals survived",
+    description: "The grounding pass accepted some candidates and rejected or abstained on the rest. Human confirmation is still required.",
+    tone: "partial",
+  },
+  ABSTAINED: {
+    label: "AI abstained",
+    title: "No AI value was safe enough to propose",
+    description: "The evidence did not support a grounded proposal. Use local extraction or transcribe the record manually.",
+    tone: "abstained",
+  },
+  UNAVAILABLE: {
+    label: "AI unavailable",
+    title: "The local fallback protected this upload",
+    description: "No AI result was presented as verified. Local text extraction or manual review remains available.",
+    tone: "unavailable",
+  },
+  FAILED: {
+    label: "AI pass failed safely",
+    title: "The local fallback protected this upload",
+    description: "The model run did not complete, so no AI result was trusted. Review locally extracted values or transcribe the record manually.",
+    tone: "unavailable",
+  },
+  NOT_REQUESTED: {
+    label: "Local path selected",
+    title: "AI processing was not requested",
+    description: "This document stayed on the local text-extraction or manual-review path.",
+    tone: "local",
+  },
+};
+
+function aiInputModeLabel(value: AiDocumentExtraction["inputMode"]): string {
+  if (value === "PDF_RENDERED_PAGES") return "Rendered PDF pages";
+  if (value === "PDF_TEXT") return "PDF text";
+  if (value === "IMAGE") return "Document image";
+  return "No model input";
+}
+
+function AiDocumentRun({ run, documentName }: { run: AiDocumentExtraction; documentName: string }) {
+  const status = AI_RUN_STATUS_META[run.status];
+  const showModel = Boolean(run.provider || run.model) && run.status !== "NOT_REQUESTED";
+  const showCounts = ["VERIFIED", "PARTIAL", "ABSTAINED"].includes(run.status);
+  return (
+    <section className={`ai-run-panel ai-run-${status.tone}`} aria-label={`AI processing record for ${documentName}`}>
+      <div className="ai-run-head">
+        <span className="ai-run-icon" aria-hidden="true">
+          {run.status === "VERIFIED" ? <BadgeCheck size={18} /> : run.status === "PARTIAL" ? <SearchCheck size={18} /> : <Info size={18} />}
+        </span>
+        <div>
+          <span className="ai-run-eyebrow">AI Evidence Copilot</span>
+          <strong>{status.title}</strong>
+          <p>{status.description}</p>
+        </div>
+        <em className={`ai-run-status ai-run-status-${status.tone}`}>{status.label}</em>
+      </div>
+      {showCounts && (
+        <dl className="ai-run-counts" aria-label="AI verification results">
+          <div><dt>Candidates</dt><dd>{run.candidateCount}</dd></div>
+          <div><dt>Grounded</dt><dd>{run.verifiedCount}</dd></div>
+          <div><dt>Rejected</dt><dd>{run.rejectedCount}</dd></div>
+          <div><dt>Abstained</dt><dd>{run.abstentionCount}</dd></div>
+        </dl>
+      )}
+      {showModel && (
+        <dl className="ai-run-metadata">
+          <div><dt>External provider</dt><dd>{run.provider || "Not reported"}</dd></div>
+          <div><dt>Extraction model</dt><dd>{run.model || "No response"}</dd></div>
+          <div><dt>Verifier model</dt><dd>{run.verifierModel || "No response"}</dd></div>
+          <div><dt>Model input</dt><dd>{aiInputModeLabel(run.inputMode)}</dd></div>
+          <div><dt>Prompt versions</dt><dd>{run.promptVersion} · verifier {run.verifierPromptVersion}</dd></div>
+          <div><dt>Completed</dt><dd>{friendlyDateTime(run.completedAt)}</dd></div>
+          {run.runId && <div><dt>Trace</dt><dd>{run.runId.slice(0, 12)}…</dd></div>}
+        </dl>
+      )}
+      {run.deterministicFallbackUsed && (
+        <p className="ai-fallback-note"><ShieldCheck size={14} aria-hidden="true" /> Local extraction also ran; AI output did not bypass review.</p>
+      )}
+      {run.warnings.length > 0 && (
+        <ul className="ai-run-warnings" aria-label="AI processing notes">
+          {run.warnings.map((warning, index) => <li key={`${index}-${warning}`}>{warning}</li>)}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 function DocumentsTab({
   caseData,
   setCaseData,
@@ -732,8 +831,32 @@ function DocumentsTab({
 }) {
   const [type, setType] = useState<DocumentType>("LCA_CERTIFIED");
   const [file, setFile] = useState<File | null>(null);
+  const [aiConsent, setAiConsent] = useState(false);
+  const [aiCapability, setAiCapability] = useState<{ available: boolean; provider: string } | null>(null);
+  const [aiCapabilityError, setAiCapabilityError] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [deletingDocument, setDeletingDocument] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    apiFetch("/api/v1/ai/status", { cache: "no-store" })
+      .then((response) => parseApi<{ available: boolean; provider: string }>(response))
+      .then((capability) => {
+        if (!active) return;
+        setAiCapability(capability);
+        setAiCapabilityError(false);
+        if (!capability.available) setAiConsent(false);
+      })
+      .catch(() => {
+        if (!active) return;
+        setAiCapability(null);
+        setAiCapabilityError(true);
+        setAiConsent(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   async function upload(event: FormEvent) {
     event.preventDefault();
@@ -748,14 +871,34 @@ function DocumentsTab({
     setUploading(true);
     setError("");
     try {
+      const useAi = aiConsent && aiCapability?.available === true;
       const form = new FormData();
       form.set("file", file);
       form.set("document_type", type);
+      if (useAi) form.set("ai_processing_consent", "accepted");
       const response = await apiFetch(`/api/v1/cases/${caseData.id}/uploads`, { method: "POST", body: form });
-      const payload = await parseApi<{ case: CasePayload }>(response);
+      const payload = await parseApi<{ case: CasePayload; document?: CasePayload["documents"][number] }>(response);
       setCaseData(payload.case);
       setFile(null);
-      setToast("File stored. Review every proposed value before running comparisons.");
+      setAiConsent(false);
+      const uploadedDocument =
+        payload.document ??
+        payload.case.documents.reduce<CasePayload["documents"][number] | undefined>(
+          (latest, document) => !latest || document.uploadedAt > latest.uploadedAt ? document : latest,
+          undefined,
+        );
+      const aiStatus = uploadedDocument?.aiExtraction?.status;
+      if (aiStatus === "VERIFIED" || aiStatus === "PARTIAL") {
+        setToast("AI evidence review completed. Confirm, correct, or reject every grounded proposal before deterministic comparisons.");
+      } else if (aiStatus === "ABSTAINED") {
+        setToast("AI safely abstained because it could not ground a proposal. Continue with local extraction or manual review.");
+      } else if (aiStatus === "UNAVAILABLE" || aiStatus === "FAILED") {
+        setToast("AI did not complete, so no AI result was trusted. Local extraction or manual review remains available.");
+      } else if (useAi) {
+        setToast("File stored. Open its AI processing record and review every proposal before running comparisons.");
+      } else {
+        setToast("File stored locally. Review every proposed value before running comparisons.");
+      }
       const input = document.getElementById("document-file") as HTMLInputElement | null;
       if (input) input.value = "";
     } catch (caught) {
@@ -791,6 +934,40 @@ function DocumentsTab({
   return (
     <>
       <SectionTitle eyebrow="Document checklist" title="Build the evidence set deliberately" text="Required records enable the full workflow. Optional records add context that can prevent an unnecessary flag." />
+      <section className="ai-copilot-overview" aria-labelledby="ai-copilot-title">
+        <div className="ai-copilot-heading">
+          <span aria-hidden="true"><SearchCheck size={21} /></span>
+          <div>
+            <span className="eyebrow">Optional · permission required per upload</span>
+            <h3 id="ai-copilot-title">Two-pass AI evidence review, with a human decision at the gate</h3>
+            <p>The extraction pass proposes structured values and citations. A separate grounding pass rejects unsupported candidates or abstains. WageShield’s deterministic comparisons receive only values you confirm.</p>
+          </div>
+        </div>
+        <ol className="ai-copilot-steps" aria-label="AI evidence workflow">
+          <li><span>1</span><div><strong>Extract</strong><small>Propose facts with page-level excerpts</small></div></li>
+          <li><span>2</span><div><strong>Verify</strong><small>Ground, reject, or abstain in a separate pass</small></div></li>
+          <li><span>3</span><div><strong>You decide</strong><small>Confirm, correct, or reject every value</small></div></li>
+        </ol>
+        <div className={`ai-capability ${aiCapability?.available ? "available" : aiCapabilityError || aiCapability ? "unavailable" : "checking"}`} role="status" aria-live="polite">
+          {aiCapability?.available ? <BadgeCheck size={15} /> : aiCapabilityError || aiCapability ? <AlertCircle size={15} /> : <LoaderCircle className="spin" size={15} />}
+          <span>
+            <strong>
+              {aiCapability?.available
+                ? `${aiCapability.provider} connection available`
+                : aiCapabilityError
+                  ? "AI availability could not be confirmed"
+                  : aiCapability
+                    ? "AI Evidence Copilot is not configured"
+                    : "Checking AI availability…"}
+            </strong>
+            <small>
+              {aiCapability?.available
+                ? "AI remains off until you opt in for a specific upload."
+                : "The local text-extraction and manual-review path remains fully available."}
+            </small>
+          </span>
+        </div>
+      </section>
       <div className="document-checklist">
         <section>
           <div className="subsection-label">Required for all four checks</div>
@@ -823,11 +1000,38 @@ function DocumentsTab({
 
       <form className="upload-panel" onSubmit={upload}>
         <div className="upload-icon"><UploadCloud size={23} /></div>
-        <div className="upload-copy"><strong>Add an employment record</strong><p>PDF, PNG, or JPEG · {formatFileSize(UPLOAD_POLICY.maximumFileBytes)} maximum · encrypted or active PDFs are rejected. Findings use only values you review.</p></div>
+        <div className="upload-copy"><strong>Add an employment record</strong><p>PDF, PNG, or JPEG · {formatFileSize(UPLOAD_POLICY.maximumFileBytes)} maximum · encrypted or active PDFs are rejected. Comparisons use only values you review.</p></div>
         <label className="upload-type"><span className="sr-only">Document type</span><select value={type} onChange={(event) => setType(event.target.value as DocumentType)}>{Object.entries(DOCUMENT_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         <label className="file-picker"><input id="document-file" type="file" accept="application/pdf,image/png,image/jpeg" onChange={(event) => setFile(event.target.files?.[0] ?? null)} /><span>{file ? file.name : "Choose file"}</span></label>
-        <button className="button button-primary" type="submit" disabled={uploading || writesAreLocked}>{uploading ? <LoaderCircle className="spin" size={15} /> : <UploadCloud size={15} />}{uploading ? "Validating…" : "Upload"}</button>
-        <small className="upload-notice"><ShieldCheck size={12} /> File text is processed on this server. Original files stay in private storage and do not enter application logs.</small>
+        <button className="button button-primary" type="submit" disabled={uploading || writesAreLocked}>
+          {uploading ? <LoaderCircle className="spin" size={15} /> : <UploadCloud size={15} />}
+          {uploading ? (aiConsent ? "AI analyzing…" : "Validating…") : aiConsent ? "Upload & analyze" : "Upload"}
+        </button>
+        <div className="ai-consent-option">
+          <input
+            id="ai-processing-consent"
+            type="checkbox"
+            checked={aiConsent}
+            onChange={(event) => setAiConsent(event.target.checked)}
+            disabled={uploading || writesAreLocked || aiCapability?.available !== true}
+          />
+          <label htmlFor="ai-processing-consent">
+            <strong><SearchCheck size={14} aria-hidden="true" /> Use AI Evidence Copilot for this document</strong>
+            <small>
+              {aiCapability?.available
+                ? `With your permission, a bounded page copy is sent over HTTPS to ${aiCapability.provider}, an external AI model provider, to propose cited facts and run a separate grounding pass. AI can be wrong; nothing enters a comparison until you confirm it.`
+                : aiCapabilityError || aiCapability
+                  ? "AI processing is unavailable right now. Leave this unchecked and upload through the local text-extraction or manual-review path."
+                  : "Checking the external AI provider before opt-in becomes available…"}
+            </small>
+          </label>
+        </div>
+        <small className="upload-notice">
+          <ShieldCheck size={12} />
+          {aiConsent
+            ? `AI permission applies to this upload only. The ${aiCapability?.provider ?? "provider"} transfer and resulting model metadata are recorded with the document.`
+            : "Local path selected: this upload is not sent to an external AI provider. Original files stay in private storage and do not enter application logs."}
+        </small>
       </form>
 
       <section className="document-inventory">
@@ -889,6 +1093,7 @@ function DocumentsTab({
                       ) : null}
                     </div>
                   )}
+                  {document.aiExtraction && <AiDocumentRun run={document.aiExtraction} documentName={document.name} />}
                 </article>
               );
             })}
@@ -925,6 +1130,51 @@ function centsToInput(cents: number): string {
   return (cents / 100).toFixed(2);
 }
 
+function ProposalProvenance({
+  provenance,
+  localOrigin = "Local text proposal",
+}: {
+  provenance?: AiEvidenceProvenance;
+  localOrigin?: "Local text proposal" | "Fictional fixture" | "User entered";
+}) {
+  if (!provenance) {
+    const explanation =
+      localOrigin === "Fictional fixture"
+        ? "Pre-reviewed synthetic demonstration data; no model call created this value."
+        : localOrigin === "User entered"
+          ? "Transcribed by the user; no model claimed to verify this value."
+          : "Pattern-based local extraction; this value was not AI-verified.";
+    return (
+      <div className="proposal-provenance proposal-provenance-local">
+        <span className="proposal-origin-badge">{localOrigin}</span>
+        <small>{explanation}</small>
+      </div>
+    );
+  }
+
+  return (
+    <div className="proposal-provenance proposal-provenance-ai">
+      <div className="proposal-provenance-badges">
+        <span className="proposal-origin-badge ai"><SearchCheck size={12} aria-hidden="true" /> AI proposed</span>
+        <span className="proposal-verified-badge"><BadgeCheck size={12} aria-hidden="true" /> Verifier grounded</span>
+      </div>
+      <p><strong>Verifier:</strong> {provenance.verifierReason}</p>
+      <dl>
+        <div><dt>Extraction</dt><dd>{provenance.provider} · {provenance.model}</dd></div>
+        <div><dt>Verification</dt><dd>{provenance.verifierModel}</dd></div>
+        <div><dt>Prompts</dt><dd>{provenance.promptVersion} · verifier {provenance.verifierPromptVersion}</dd></div>
+        <div><dt>Trace</dt><dd>{provenance.runId.slice(0, 10)}… / {provenance.candidateId.slice(0, 10)}…</dd></div>
+      </dl>
+    </div>
+  );
+}
+
+function factOriginLabel(fact: FactRecord): "Local text proposal" | "Fictional fixture" | "User entered" {
+  if (fact.origin === "FIXTURE") return "Fictional fixture";
+  if (fact.origin === "USER_ENTERED") return "User entered";
+  return "Local text proposal";
+}
+
 function FactProposalCard({
   fact,
   disabled,
@@ -954,8 +1204,9 @@ function FactProposalCard({
         <div><span className="proposal-kind">Fact</span><strong>{fact.label}</strong></div>
         <em>{Math.round(fact.confidence * 100)}%</em>
       </div>
+      <ProposalProvenance provenance={fact.aiProvenance} localOrigin={factOriginLabel(fact)} />
       <p className="proposal-value">{fact.rawValue || "No value extracted"}</p>
-      <blockquote className="proposal-evidence">“{fact.evidence.text}”<cite>{fact.evidence.documentName} · page {fact.evidence.page}</cite></blockquote>
+      <blockquote className="proposal-evidence">“{fact.aiProvenance?.evidenceExcerpt ?? fact.evidence.text}”<cite>{fact.evidence.documentName} · page {fact.aiProvenance?.evidencePage ?? fact.evidence.page}</cite></blockquote>
       {editing ? (
         <div className="proposal-edit">
           <label className="field-label">Displayed value<input value={raw} onChange={(event) => setRaw(event.target.value)} /></label>
@@ -978,12 +1229,14 @@ function FactProposalCard({
 
 function PayPeriodProposalCard({
   period,
+  localOrigin,
   disabled,
   onConfirm,
   onCorrect,
   onReject,
 }: {
   period: PayPeriod;
+  localOrigin: "Local text proposal" | "Fictional fixture";
   disabled: boolean;
   onConfirm: () => void;
   onCorrect: (patch: {
@@ -1032,8 +1285,9 @@ function PayPeriodProposalCard({
         <div><span className="proposal-kind">Pay period</span><strong>{friendlyDate(period.start)} – {friendlyDate(period.end)}</strong></div>
         <em>{formatCents(period.ordinaryBaseCents)}</em>
       </div>
+      <ProposalProvenance provenance={period.aiProvenance} localOrigin={localOrigin} />
       <p className="proposal-value">Ordinary base {formatCents(period.ordinaryBaseCents)} · paid {friendlyDate(period.payDate)}</p>
-      <blockquote className="proposal-evidence">“{period.evidence.text}”<cite>{period.evidence.documentName} · page {period.evidence.page}</cite></blockquote>
+      <blockquote className="proposal-evidence">“{period.aiProvenance?.evidenceExcerpt ?? period.evidence.text}”<cite>{period.evidence.documentName} · page {period.aiProvenance?.evidencePage ?? period.evidence.page}</cite></blockquote>
       {editing ? (
         <div className="proposal-edit">
           <div className="proposal-edit-grid">
@@ -1066,12 +1320,14 @@ function PayPeriodProposalCard({
 
 function DeductionProposalCard({
   deduction,
+  localOrigin,
   disabled,
   onConfirm,
   onCorrect,
   onReject,
 }: {
   deduction: DeductionObservation;
+  localOrigin: "Local text proposal" | "Fictional fixture";
   disabled: boolean;
   onConfirm: () => void;
   onCorrect: (patch: {
@@ -1111,8 +1367,9 @@ function DeductionProposalCard({
         <div><span className="proposal-kind">Deduction</span><strong>{deduction.description || "Deduction line"}</strong></div>
         <em>{formatCents(deduction.amountCents)}</em>
       </div>
+      <ProposalProvenance provenance={deduction.aiProvenance} localOrigin={localOrigin} />
       <p className="proposal-value">{formatCents(deduction.amountCents)} · {deduction.date || "no date"}</p>
-      <blockquote className="proposal-evidence">“{deduction.evidence.text}”<cite>{deduction.evidence.documentName} · page {deduction.evidence.page}</cite></blockquote>
+      <blockquote className="proposal-evidence">“{deduction.aiProvenance?.evidenceExcerpt ?? deduction.evidence.text}”<cite>{deduction.evidence.documentName} · page {deduction.aiProvenance?.evidencePage ?? deduction.evidence.page}</cite></blockquote>
       {editing ? (
         <div className="proposal-edit">
           <div className="proposal-edit-grid">
@@ -1270,7 +1527,7 @@ function FactsTab({
 
   return (
     <>
-      <SectionTitle eyebrow="Fact review" title="Confirm the values that drive each comparison" text="Corrections preserve the extracted value, create a new reviewed version, and invalidate dependent findings until analysis reruns." />
+      <SectionTitle eyebrow="Fact review" title="Confirm the values that drive each comparison" text="AI and local extraction create proposals—not conclusions. Confirm, correct, or reject each value before deterministic rules can use it." />
       {caseData.scenario === "custom" && (
         <ManualFactsForm caseData={caseData} setCaseData={setCaseData} setError={setError} setToast={setToast} writesAreLocked={writesAreLocked} />
       )}
@@ -1279,7 +1536,7 @@ function FactsTab({
           <div className="proposals-head">
             <span className="eyebrow"><AlertCircle size={14} aria-hidden="true" /> Proposals awaiting review</span>
             <h3>{pendingCount} item{pendingCount === 1 ? "" : "s"} need your confirmation</h3>
-            <p>Comparisons stay locked until every extracted proposal is confirmed, corrected, or rejected.</p>
+            <p>Comparisons stay locked until every AI or locally extracted proposal is confirmed, corrected, or rejected.</p>
           </div>
           <div className="proposals-grid">
             {pendingFacts.map((fact) => (
@@ -1296,6 +1553,7 @@ function FactsTab({
               <PayPeriodProposalCard
                 key={period.id}
                 period={period}
+                localOrigin={caseData.mode === "SANDBOX" ? "Fictional fixture" : "Local text proposal"}
                 disabled={writesAreLocked || pendingBusy === period.id}
                 onConfirm={() => review(periodUrl(period.id), { action: "confirm" }, period.id)}
                 onCorrect={(patch) => review(periodUrl(period.id), { action: "correct", ...patch }, period.id)}
@@ -1306,6 +1564,7 @@ function FactsTab({
               <DeductionProposalCard
                 key={deduction.id}
                 deduction={deduction}
+                localOrigin={caseData.mode === "SANDBOX" ? "Fictional fixture" : "Local text proposal"}
                 disabled={writesAreLocked || pendingBusy === deduction.id}
                 onConfirm={() => review(deductionUrl(deduction.id), { action: "confirm" }, deduction.id)}
                 onCorrect={(patch) => review(deductionUrl(deduction.id), { action: "correct", ...patch }, deduction.id)}
@@ -1322,7 +1581,7 @@ function FactsTab({
               <button key={fact.id} type="button" className={selected?.id === fact.id ? "active" : ""} onClick={() => setSelectedFactId(fact.id)} aria-pressed={selected?.id === fact.id}>
                 <span className={`fact-state ${fact.reviewStatus === "NEEDS_REVIEW" ? "needs" : "accepted"}`}>{fact.reviewStatus === "NEEDS_REVIEW" ? <AlertCircle size={13} /> : <Check size={13} />}</span>
                 <span><strong>{fact.label}</strong><small>{fact.rawValue || "Value not entered"}</small></span>
-                <em>{Math.round(fact.confidence * 100)}%</em>
+                <em aria-label={`Extraction confidence ${Math.round(fact.confidence * 100)} percent`}>{Math.round(fact.confidence * 100)}%</em>
               </button>
             ))}
           </div>
@@ -1331,7 +1590,7 @@ function FactsTab({
               <div className="evidence-document-bar">
                 <FileSearch size={15} />
                 <span>{selected.evidence.documentName}</span>
-                <small>Page {selected.evidence.page}</small>
+                <small>Page {selected.aiProvenance?.evidencePage ?? selected.evidence.page}</small>
                 {caseData.documents.some((document) => document.id === selected.evidence.documentId) && (
                   <a href={`/api/v1/cases/${caseData.id}/documents/${selected.evidence.documentId}`} target="_blank" rel="noreferrer">
                     Open record <ExternalLink size={11} />
@@ -1340,14 +1599,15 @@ function FactsTab({
               </div>
               <div className="document-page-mock">
                 <div className={`document-watermark ${caseData.mode === "SANDBOX" ? "sandbox" : "standard"}`}>
-                  {caseData.mode === "SANDBOX" ? "FICTIONAL SANDBOX EVIDENCE" : "TEXT-LAYER EVIDENCE PREVIEW"}
+                  {caseData.mode === "SANDBOX" ? "FICTIONAL SANDBOX EVIDENCE" : selected.aiProvenance ? "AI PROPOSAL · HUMAN REVIEW REQUIRED" : "LOCAL EVIDENCE PREVIEW"}
                 </div>
                 <span className="doc-line short" /><span className="doc-line" /><span className="doc-line medium" />
-                <div className="evidence-highlight"><small>{selected.evidence.label}</small><strong>{selected.evidence.text}</strong></div>
+                <div className="evidence-highlight"><small>{selected.evidence.label}</small><strong>{selected.aiProvenance?.evidenceExcerpt ?? selected.evidence.text}</strong></div>
                 <span className="doc-line" /><span className="doc-line medium" /><span className="doc-line short" />
               </div>
               <div className="fact-detail-panel">
                 <div className="fact-detail-head"><div><span className="eyebrow">Normalized fact</span><h3>{selected.label}</h3></div><div className="fact-detail-actions"><button type="button" className="button button-secondary button-small" onClick={() => edit(selected)} disabled={saving || Boolean(deletingFact) || writesAreLocked}><Pencil size={13} /> Correct</button>{selected.origin === "USER_ENTERED" && <button type="button" className="button button-danger button-small" onClick={() => deleteUserFact(selected)} disabled={saving || Boolean(deletingFact) || writesAreLocked}>{deletingFact === selected.id ? <LoaderCircle className="spin" size={13} /> : <Trash2 size={13} />}{deletingFact === selected.id ? "Removing…" : "Remove"}</button>}</div></div>
+                <ProposalProvenance provenance={selected.aiProvenance} localOrigin={factOriginLabel(selected)} />
                 {editing === selected.id ? (
                   <div className="fact-edit-form">
                     <label className="field-label">Displayed value<input value={rawValue} onChange={(event) => setRawValue(event.target.value)} /></label>
@@ -1355,14 +1615,14 @@ function FactsTab({
                     <div><button type="button" className="button button-primary button-small" onClick={() => saveCorrection(selected)} disabled={saving || writesAreLocked}>{saving ? <LoaderCircle className="spin" size={13} /> : <Save size={13} />} Save correction</button><button type="button" className="button button-ghost button-small" onClick={() => setEditing("")}>Cancel</button></div>
                   </div>
                 ) : (
-                  <dl className="detail-list compact"><div><dt>Reviewed value</dt><dd>{selected.rawValue}</dd></div><div><dt>Normalized input</dt><dd>{selected.type.endsWith("_CENTS") && /^\d+$/.test(selected.normalizedValue) ? formatCents(Number(selected.normalizedValue)) : selected.normalizedValue}</dd></div><div><dt>Review status</dt><dd>{selected.reviewStatus.replaceAll("_", " ")}</dd></div><div><dt>Affects</dt><dd>{selected.affects.map(moduleLabel).join(", ")}</dd></div></dl>
+                  <dl className="detail-list compact"><div><dt>Reviewed value</dt><dd>{selected.rawValue}</dd></div><div><dt>Normalized input</dt><dd>{selected.type.endsWith("_CENTS") && /^\d+$/.test(selected.normalizedValue) ? formatCents(Number(selected.normalizedValue)) : selected.normalizedValue}</dd></div><div><dt>Review status</dt><dd>{selected.reviewStatus.replaceAll("_", " ")}</dd></div><div><dt>Source method</dt><dd>{selected.aiProvenance ? "AI proposed · separately verified" : factOriginLabel(selected)}</dd></div><div><dt>Affects</dt><dd>{selected.affects.map(moduleLabel).join(", ")}</dd></div></dl>
                 )}
               </div>
             </div>
           )}
         </div>
       ) : (
-        <div className="empty-panel compact"><FileSearch size={23} /><strong>No file-derived facts yet</strong><p>Upload an LCA, offer letter, and paystubs. WageShield reads the text layer and uses those values in the four comparisons.</p></div>
+        <div className="empty-panel compact"><FileSearch size={23} /><strong>No file-derived facts yet</strong><p>Upload an LCA, offer letter, and paystubs. Choose optional AI evidence review or stay on the local path, then confirm every proposed value.</p></div>
       )}
     </>
   );

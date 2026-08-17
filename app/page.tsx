@@ -59,15 +59,17 @@ export default async function Home() {
         <div className="hero-glow" aria-hidden="true" />
         <div className="hero-grid page-shell">
           <div className="hero-copy">
-            <div className="trust-chip"><BadgeCheck size={15} /> Evidence first. Human reviewed.</div>
+            <div className="trust-chip"><BadgeCheck size={15} /> AI-assisted. Evidence-grounded. Human reviewed.</div>
             <h1>Turn scattered employment records into a clear evidence map.</h1>
             <p className="hero-lede">
-              WageShield compares an H-1B worker&apos;s LCA, offer, pay records, timesheets, and work messages—then shows
-              exactly what differs, how the math works, and what still needs human review.
+              With explicit consent, WageShield&apos;s AI Evidence Copilot reads an H-1B worker&apos;s records, cites each
+              proposed fact, and verifies the citation in a separate pass. People confirm the evidence before transparent
+              code shows what differs and how the math works.
             </p>
             <LandingActions signedIn={Boolean(user)} signInPath={signInPath} showSandbox={showSandbox} />
             <div className="hero-trust-row">
               <span><FolderLock size={15} /> Private case storage</span>
+              <span><Sparkles size={15} /> Two-pass AI evidence review</span>
               <span><Calculator size={15} /> Deterministic math</span>
               <span><ShieldCheck size={15} /> No automatic filing</span>
             </div>
@@ -150,7 +152,7 @@ export default async function Home() {
           </div>
           <ol className="workflow-list">
             <li><span>1</span><div><strong>Add records</strong><p>Use a checklist for the LCA, offer, paystubs, and optional context.</p></div></li>
-            <li><span>2</span><div><strong>Review the facts</strong><p>Confirm wages, periods, names, locations, and evidence excerpts.</p></div></li>
+            <li><span>2</span><div><strong>Verify AI proposals</strong><p>Inspect the cited page, verifier decision, uncertainty, and every proposed value.</p></div></li>
             <li><span>3</span><div><strong>Compare consistently</strong><p>Versioned code handles money, time intervals, tolerances, and statuses.</p></div></li>
             <li><span>4</span><div><strong>Choose what leaves</strong><p>Build a reconstructed PDF, inspect redactions, download, or delete the case.</p></div></li>
           </ol>
@@ -164,8 +166,9 @@ export default async function Home() {
             <span className="eyebrow">Privacy is part of the workflow</span>
             <h2>Your evidence is not a prompt library.</h2>
             <p>
-              Case files stay in private, case-scoped storage. Official sources remain separate. Reports are rebuilt from
-              an allowlist, and case deletion removes stored documents, reports, and private rows before returning a verified result.
+              AI processing is optional per upload and requires an explicit transfer choice. Case files otherwise stay in
+              private, case-scoped storage. Reports are rebuilt from an allowlist, and case deletion removes stored
+              documents, reports, and private rows before returning a verified result.
             </p>
           </div>
           <div className="privacy-list">

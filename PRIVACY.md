@@ -13,6 +13,12 @@ This file is the operator/auditor companion to the visitor-facing `/privacy` pag
 - Account email, display name, PBKDF2-SHA256 password hash, policy-consent version/time, and hashed session tokens in Render PostgreSQL.
 - Hashed, single-use password-reset tokens and hashed rate-limit buckets. Raw passwords, session tokens, reset tokens, and raw rate-limit emails are not stored.
 - Case settings, reviewed structured facts, evidence excerpts, corrections, findings, report selections, and retention timestamps.
+- Accepted AI Evidence Copilot proposals plus sanitized abstention counts,
+  warnings, and bounded run provenance such as provider, model, prompt/schema
+  version, timing, and completion status. Raw provider prompts, responses,
+  rendered base64 pages, extracted page text, and provider errors are not
+  persisted as AI-run telemetry. Model proposals remain unreviewed until a
+  person confirms or corrects them.
 - Uploaded documents and generated reports as private binary rows in Render PostgreSQL under random case-scoped keys, together with ownership and integrity metadata.
 - Safe operational audit metadata: opaque IDs, event stage, document size/type, counts, rule/policy versions, and timestamps.
 - In the active database after deletion, a tombstone containing only a one-way SHA-256 case-ID hash, request/completion times, and deletion-policy version.
@@ -24,7 +30,13 @@ This file is the operator/auditor companion to the visitor-facing `/privacy` pag
 - No employer, agency, or other third-party notification and no automatic complaint filing.
 - No copy of private case material in the separate official-source corpus.
 - No structured SSN, passport, banking, card, medical, or government-credential field. Users should redact unnecessary identifiers before upload.
-- No model-training use and no external AI/OCR transfer. Searchable PDF text is parsed within the Render Node service; images require human review.
+- No claim that private evidence is used to train WageShield's own model;
+  WageShield does not train or fine-tune one. When the AI Evidence Copilot is
+  enabled for an individual upload with explicit consent, up to six bounded
+  JPEG page images plus bounded extracted page text are transferred to the
+  configured inference provider for separate extraction and verification
+  requests. A complete raw PDF is not transferred. The provider API key and raw
+  authentication headers are never case data.
 
 ## Retention and deletion
 
@@ -40,7 +52,27 @@ Account controls provide an export and verified account deletion. Account deleti
 
 ## Processors and credentials
 
-Render processes the Node application, PostgreSQL records and private document/report bytes, cron execution, delivery traffic, and its documented recovery copies. Resend receives the destination email address and password-reset message only when the user requests account recovery. No evidence document is sent to Resend. The operator is responsible for applicable processor agreements, data-location choices, recovery access, access policy, and subprocessor disclosure.
+Render processes the Node application, PostgreSQL records and private
+document/report bytes, cron execution, delivery traffic, and its documented
+recovery copies. Resend receives the destination email address and
+password-reset message only when the user requests account recovery. No
+evidence document is sent to Resend.
+
+When configured, Featherless (or the explicitly selected OpenAI-compatible
+provider) receives the bounded page images, extracted text, and task prompts
+required for two inference passes after the user consents for that upload.
+Featherless's published API policy currently says API prompts
+and completions are processed in real time and are not logged or stored; that
+provider statement is not a WageShield guarantee and may change. The operator
+must review the current policy, chosen model license, account plan, data
+location, subprocessors, incident terms, and any data-processing agreement
+before enabling AI for a real private record. See
+[Featherless privacy and logging](https://featherless.ai/docs/privacy-and-logging)
+and its [privacy policy](https://featherless.ai/legal/privacy-policy).
+
+The public hackathon demonstration must use generated synthetic records only,
+which avoids sending a real person's payroll or immigration evidence to the
+inference provider. No evidence document is sent to Resend.
 
 ## Operator obligations before launch
 
@@ -48,6 +80,12 @@ Render processes the Node application, PostgreSQL records and private document/r
 - Have counsel review the served `/privacy` and `/terms` pages and set a real effective date/version when text changes.
 - Decide the lawful basis, user eligibility, geographic scope, request-response procedure, and incident notice process.
 - Restrict support tickets to non-sensitive metadata; never ask users to email employment records or credentials.
+- Keep the public demo synthetic-only. Before enabling AI for authorized real
+  private-beta records, document the provider/model decision, verify its
+  current retention and training terms, obtain any required agreement or
+  consent, and update both the served privacy notice and processing inventory.
+- Rotate `AI_EVIDENCE_API_KEY` if exposed; never place it in a `NEXT_PUBLIC_*`
+  variable, browser bundle, log, screenshot, evaluation result, or repository.
 - Test export, immediate deletion, scheduled expiry, password reset, and cross-account denial against the deployed environment.
 
 Localhost may emit a password-reset link to the local development log when Resend is not configured. Production refuses reset-link creation without an explicit canonical HTTPS origin and email provider.

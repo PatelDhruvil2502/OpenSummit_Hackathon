@@ -47,7 +47,7 @@ export default function SecurityPage() {
             <li>Type is determined from the file signature, not the declared MIME type or the filename. A mismatch between signature, extension, and declared type is rejected.</li>
             <li>Container integrity is checked: truncated files and bytes appended after a PDF end marker are rejected.</li>
             <li>Encrypted PDFs and PDFs containing JavaScript, embedded files, launch actions, or rich media are rejected before any parsing.</li>
-            <li>PDFs are read for their text layer only, capped at {UPLOAD_POLICY.maximumPdfPages} pages. Images are never guessed at — they route to manual review.</li>
+            <li>Local PDF parsing is capped at {UPLOAD_POLICY.maximumPdfPages} pages. AI review is separately opt-in and sends only a bounded set of rendered pages or the selected image; without consent or a configured provider, images route to manual review.</li>
           </ul>
         </article>
 
@@ -67,6 +67,8 @@ export default function SecurityPage() {
           <span className="legal-card-icon"><ShieldCheck size={19} /></span>
           <h2>Analysis boundary</h2>
           <ul>
+            <li>Uploaded content is treated as untrusted evidence, never as model instructions. AI responses must pass a strict schema, page bounds, candidate limits, and a separate grounding pass.</li>
+            <li>Only verifier-supported AI candidates enter the review queue, and they remain unusable by analysis until a person confirms or corrects them. Provider failure falls back to local parsing or manual review.</li>
             <li>Findings are produced only by pure, versioned rule code from facts you reviewed. Document text cannot invoke a tool, change policy, or publish a status.</li>
             <li>All money arithmetic uses integer cents or exact rational arithmetic. Aggregate expectations are rounded once, after aggregation.</li>
             <li>Reports are rebuilt from an allowlist of structured fields. Original document layers are never copied, so excluded content is absent rather than covered over.</li>
@@ -94,6 +96,7 @@ export default function SecurityPage() {
           <ul>
             <li>Uploads are not scanned by an antivirus or content-disarm engine. Structural validation is not malware detection.</li>
             <li>There is no second authentication factor yet. Account safety rests on your password.</li>
+            <li>AI extraction and verification can be wrong or incomplete. A verifier-supported citation is not proof that the value or interpretation is correct.</li>
             <li>Render PostgreSQL uses provider encryption at rest; WageShield does not add customer-managed keys.</li>
             <li>Paid Render PostgreSQL point-in-time recovery can retain a recoverable prior database state for up to three days on this Hobby workspace, as disclosed in the Privacy policy.</li>
             <li>An independent penetration test and privacy assessment have not been performed on this build.</li>

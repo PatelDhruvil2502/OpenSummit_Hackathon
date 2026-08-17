@@ -16,7 +16,7 @@ export const COMPANY = {
   privacyEmail: process.env.NEXT_PUBLIC_PRIVACY_EMAIL ?? "privacy@wageshield.example",
   securityEmail: process.env.NEXT_PUBLIC_SECURITY_EMAIL ?? "security@wageshield.example",
   /** Update when the served legal text changes. */
-  policyVersion: "1.0",
+  policyVersion: "1.1",
   policyEffectiveDate: "2026-08-16",
 } as const;
 

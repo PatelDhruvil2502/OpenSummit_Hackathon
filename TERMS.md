@@ -4,7 +4,7 @@ The visitor-facing agreement is served at `/terms`; it is versioned with the pol
 
 ## 1. Service
 
-WageShield H-1B is a document-organization tool. A user supplies employment records they are authorized to possess, verifies source-linked values, and asks fixed published rules to compare those values. The service can reconstruct selected material into an evidence packet for human review.
+WageShield H-1B is a document-organization tool. A user supplies employment records they are authorized to possess and, separately for each upload, may opt into AI evidence review. The AI may propose source-linked values and a second grounding pass checks each cited page; the user still confirms, corrects, or rejects every proposal before fixed published rules compare the reviewed values. The service can reconstruct selected material into an evidence packet for human review.
 
 It is not a law firm, immigration adviser, payroll adjudicator, government service, or secure archive. It does not create an attorney-client relationship, decide that a law was broken, calculate an amount legally owed, assess immigration eligibility, file a complaint, or contact an employer, agency, or third party.
 
@@ -21,6 +21,7 @@ The operator must define age, residency, geographic, payment, and professional-u
 Users must:
 
 - possess authority to upload every record and avoid violating a law, order, agreement, or another person's rights;
+- select AI evidence review only when authorized to transmit bounded page images or text from that upload to the configured inference provider, after reviewing the privacy policy;
 - redact unnecessary high-risk identifiers before upload;
 - verify every extracted or entered value and source excerpt against the original;
 - keep their account secure and avoid sharing credentials or reset links;

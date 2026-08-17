@@ -14,7 +14,7 @@ import { SiteHeader } from "@/components/site-header";
 
 export const metadata: Metadata = {
   title: "Methodology",
-  description: "How WageShield separates evidence extraction, deterministic comparisons, official context, and human review.",
+  description: "How WageShield separates AI evidence proposals, grounding verification, human confirmation, deterministic comparisons, and official context.",
 };
 
 const SAFE_STATUSES = [
@@ -31,23 +31,23 @@ export default function MethodologyPage() {
       <SiteHeader />
       <section className="method-hero page-shell">
         <Link href="/" className="back-link"><ArrowLeft size={14} /> Back to overview</Link>
-        <span className="eyebrow">Methodology · version 1.0</span>
+        <span className="eyebrow">Methodology · version 1.1</span>
         <h1>Document understanding can assist. Versioned code owns the conclusion.</h1>
         <p>
-          WageShield is designed around a hard boundary: a parser or model may propose structured facts, but money,
-          dates, tolerances, statuses, access, reporting, and deletion stay deterministic and inspectable. This public
-          demo uses pre-reviewed synthetic fixtures and an explicit manual fallback, so it needs no external model service.
+          WageShield is designed around a hard boundary: with explicit consent, a multimodal model may propose cited
+          facts and a separate grounding pass may support or reject them. A person must still confirm every value.
+          Money, dates, tolerances, statuses, access, reporting, and deletion remain deterministic and inspectable.
         </p>
       </section>
 
       <section className="page-shell method-flow" aria-label="Analysis architecture">
         <article><span><FileLock2 size={20} /></span><strong>Private documents</strong><p>User-authorized records remain case scoped.</p></article>
         <i>→</i>
-        <article><span><Bot size={20} /></span><strong>Proposed facts</strong><p>Extraction may return typed values and exact evidence references.</p></article>
+        <article><span><Bot size={20} /></span><strong>AI propose + verify</strong><p>Two bounded passes extract typed values, check the cited page, and abstain when support is missing.</p></article>
         <i>→</i>
-        <article><span><Braces size={20} /></span><strong>Pure rules</strong><p>Integer-cent math and half-open date intervals produce neutral statuses.</p></article>
+        <article><span><CheckCircle2 size={20} /></span><strong>Human confirmation</strong><p>Every supported proposal remains blocked from analysis until a person confirms or corrects it.</p></article>
         <i>→</i>
-        <article><span><CheckCircle2 size={20} /></span><strong>Human review</strong><p>Every result keeps uncertainty and next questions visible.</p></article>
+        <article><span><Braces size={20} /></span><strong>Pure rules</strong><p>Integer-cent math and half-open date intervals produce neutral, inspectable statuses.</p></article>
       </section>
 
       <section className="section page-shell method-grid">

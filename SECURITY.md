@@ -11,6 +11,32 @@ WageShield implements meaningful application controls, but this repository is no
 - **Request boundaries:** JSON, form, and multipart bodies are read under explicit limits. State-changing cross-site requests are rejected; destructive and expensive routes use idempotency receipts that contain resource references rather than private payload snapshots.
 - **Upload validation:** A file is capped at 12 MB; each case is capped at 50 documents and 100 MB. Signature, extension, declared type, truncation, and bytes after a PDF end marker are checked. Encrypted PDFs and PDFs declaring JavaScript, embedded files, launch actions, or rich media are rejected.
 - **Bounded parsing:** PDF parsing uses the patched `pdfjs-dist` package with evaluation disabled and page/output limits. Parser output remains `NEEDS_REVIEW`; a person must link it to a same-case document/page/excerpt before rules may use it.
+- **Untrusted AI boundary:** When explicitly configured and separately
+  consented for an upload, the AI Evidence Copilot sends up to six bounded JPEG
+  page images plus bounded extracted text to a server-side OpenAI-compatible
+  inference endpoint; it never sends the complete raw PDF. Document content is
+  always treated as untrusted data, never as
+  instructions. The model has no tools, storage credentials, account context,
+  rule-execution capability, or direct database access. Responses pass strict
+  shape, size, page, excerpt, and same-document evidence checks.
+- **Separate grounding verification and abstention:** Extraction and evidence
+  verification are separate model passes. Unsupported candidates are rejected;
+  missing, conflicting, or ambiguous support produces an explicit abstention.
+  Every surviving candidate remains `NEEDS_REVIEW` until a person confirms or
+  corrects it. Provider timeout, refusal, malformed JSON, invalid citations, or
+  network failure returns to human review and never fabricates a result.
+- **Inference resource bounds:** Page count, render dimensions/pixels, text,
+  response bytes, and candidate counts are bounded. Each provider request uses
+  a timeout clamped to 5-30 seconds (20 seconds by default) and has at most one
+  retry for a transient HTTP/network failure. Provider errors are sanitized
+  before persistence or display.
+- **AI credential and provenance:** The provider API key is read only by the
+  Node service and is never sent to the browser, stored in a case, or exposed by
+  readiness endpoints. A run records bounded provenance such as provider,
+  model, prompt/schema version, completion time, sanitized outcome counts, and
+  verifier decisions; raw prompts, responses, base64 pages, page text, and
+  provider errors are not persisted as AI-run telemetry. Provenance does not
+  turn a model response into a legal or financial conclusion.
 - **Private storage:** Source files and reports are stored as private PostgreSQL binary rows under random case-scoped keys. PostgreSQL records ownership and SHA-256 integrity metadata; authenticated application routes mediate every read.
 - **Deterministic analysis:** Pure versioned rule code consumes only reviewed structured facts. Document text cannot invoke tools, change policy, perform the final calculation, or publish a status.
 - **Report construction:** Reports are reconstructed from selected allowlisted fields. Redaction rewrites matching identifiers before PDF creation; it does not paint over a copied original layer.
@@ -21,6 +47,15 @@ WageShield implements meaningful application controls, but this repository is no
 ## Known limits
 
 - Uploads do **not** pass through antivirus, content-disarm/reconstruction, or an independently isolated malware-scanning service. Structural PDF checks are not malware detection.
+- AI output can be incomplete, inconsistent, or wrong. Schema validation,
+  citation checks, a second model pass, and human confirmation reduce risk but
+  do not establish factual correctness. The current synthetic evaluation suite
+  is a regression harness, not an independent model audit or accuracy claim.
+- A configured inference provider is a separate processor and third-party
+  availability boundary. The operator must review the provider's current
+  logging/retention policy, model license, data location, account plan, and
+  incident terms before sending any real private record. The hackathon demo is
+  synthetic-only.
 - The product has no second authentication factor, enterprise SSO policy, administrator console, or per-workspace role model.
 - Render PostgreSQL provider encryption at rest is used; the application does not add per-customer or customer-managed encryption keys.
 - There has been no independent penetration test, privacy assessment, threat-model review, or legal review of this build.

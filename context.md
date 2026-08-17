@@ -17,11 +17,14 @@ current code and tests, then update this file in the same change.
 - The local Git author email is still the placeholder `your-email@example.com`.
   Configure the developer's real or GitHub-noreply address before future
   commits; do not rewrite existing history only to change this metadata.
-- No Render service, PostgreSQL database, Resend secret, DNS record, or custom
-  domain was created by the coding session. Those are still operator actions.
+- No Render service, PostgreSQL database, Featherless/Resend secret, DNS record,
+  or custom domain was created by the coding session. Those are still operator
+  actions.
 - No production secret is stored in Git. Do not add one to this file.
-- The intended immediate use is a low-traffic, access-controlled investor demo
-  lasting roughly one to two weeks.
+- The immediate public use is the Open Summit Atlas AI for Social Good
+  hackathon and must use synthetic records only. A later low-traffic,
+  access-controlled investor demo may use authorized real records only after
+  the operator completes the additional privacy/security review.
 - The founder wants the investor deployment to accept real records that the
   tester is authorized to possess. The deployed experience must start empty;
   it must not substitute fictional or hardcoded case data.
@@ -30,15 +33,18 @@ current code and tests, then update this file in the same change.
 - The desired hosting choice is Render because the founder has a $50 Render
   promotion. Cloudflare, Netlify, Vercel Blob, and S3 are not part of the final
   deployment.
-- The only third-party API currently required is Resend for password recovery.
-  There is no AI, ML, OCR, vector-database, GPU, or OpenAI API dependency.
+- Two third-party APIs are configured: Featherless/OpenAI-compatible inference
+  for the optional per-upload AI Evidence Copilot, and Resend for password
+  recovery. No vector database, downloaded model, or application GPU is used.
 
 ## Product summary
 
-WageShield H-1B is a privacy-oriented evidence organizer for employment
-records. A user creates a review, uploads records, confirms proposed facts
-against exact source evidence, runs deterministic documentary checks, and can
-generate a selective redacted PDF plus a JSON manifest.
+WageShield H-1B is a privacy-oriented, AI-assisted evidence organizer for
+employment records. With separate consent for an upload, an extraction model
+proposes facts from bounded page images/text and a separate verifier pass grounds
+them against exact page evidence or abstains. A user confirms every surviving
+proposal before deterministic documentary checks run and can generate a
+selective redacted PDF plus a JSON manifest.
 
 The product deliberately does not:
 
@@ -46,13 +52,15 @@ The product deliberately does not:
 - calculate a legally owed amount;
 - file or send a complaint;
 - contact an employer, attorney, or agency;
-- replace legal advice; or
-- use a language model to interpret evidence.
+- replace legal advice;
+- let a model make a legal/financial conclusion, confirm a fact, or run a rule;
+  or
+- silently send a document to a model without per-upload consent.
 
 The implemented checks cover documentary comparisons involving wages,
 nonproductive time, deductions or fees, and employment facts. Rule inputs must
-be human-reviewed structured facts. Parser output alone is never a final
-finding.
+be human-reviewed structured facts. Local-parser and AI output alone is never a
+final finding.
 
 ## Final deployment architecture
 
@@ -62,7 +70,8 @@ Browser
 Render Web Service: Next.js 16 / Node.js
   |-- UI and App Router API routes
   |-- authentication and authorization
-  |-- bounded PDF text extraction
+  |-- bounded PDF text extraction and page rendering
+  |-- two-pass AI evidence adapter (explicit upload consent)
   |-- deterministic rules
   |-- PDF report reconstruction
   |
@@ -78,6 +87,9 @@ Render Cron Job
 
 Resend
   `-- password-reset email only
+
+Featherless/OpenAI-compatible API
+  `-- bounded multimodal extraction and separate grounding verification
 ```
 
 `render.yaml` is the authoritative infrastructure definition. It provisions:
@@ -154,12 +166,22 @@ disk and revisit the storage architecture before a broader release.
 - PDF parsing uses patched `pdfjs-dist` with evaluation disabled and bounded
   pages/output.
 - A PDF is limited to 200 pages.
+- With explicit per-upload consent, AI preparation renders at most six pages to
+  bounded metadata-stripped JPEGs and includes bounded extracted text. The
+  complete raw PDF is never sent to the provider.
+- The AI pipeline makes separate extraction and verification calls. Output is
+  schema, count, page, excerpt, and grounding checked; failures and ambiguity
+  return to the local/manual path rather than inventing a value.
+- AI calls default to a 20-second timeout clamped to 5-30 seconds and retry at
+  most once for transient network/HTTP failures. The model has no tools,
+  database/storage credentials, retrieval corpus, or rule execution authority.
 - Extracted facts, pay periods, deductions, and events are saved as
   `NEEDS_REVIEW`; upload never auto-runs analysis.
 - Manual entries require same-case document, page, and source-excerpt
   provenance. Do not replace this with fabricated evidence strings.
 - Deterministic rules consume only reviewed structured data.
-- Images are not guessed at; they use the evidence-linked manual review path.
+- Images use the Evidence Copilot only with consent and configured credentials;
+  otherwise they use the evidence-linked manual review path.
 - Structured collection limits in `lib/product-config.ts` bound facts, pay
   periods, deductions, events, corrections, reports, active cases, and audits.
 
@@ -234,9 +256,16 @@ Render. The completed changes include:
 17. Added the full founder-facing deployment, verification, cost-control, and
     teardown runbook in `DEPLOYMENT.md`.
 
+The current hackathon change adds the two-pass multimodal AI Evidence Copilot,
+strict grounding/abstention contracts, per-upload consent and fallback,
+provider/model provenance, a review UI, provider-safe privacy/security copy,
+and a synthetic evaluation harness. Do not copy the older verification counts
+below into a submission as evidence for this change; rerun the current preflight
+and the explicit AI evaluation first.
+
 ## Verification evidence
 
-The final Render baseline was verified twice, including once immediately after
+The pre-AI Render baseline was verified twice, including once immediately after
 a clean dependency installation:
 
 ```text
@@ -278,7 +307,8 @@ The sanitized contract is `.env.example`. Production values marked
 
 | Variable | Purpose |
 | --- | --- |
-| `RESEND_API_KEY` | Dedicated Resend sending key; the only API secret |
+| `AI_EVIDENCE_API_KEY` | Dedicated server-only Featherless inference key |
+| `RESEND_API_KEY` | Dedicated Resend sending key |
 | `EMAIL_FROM` | Sender on the exact verified Resend domain |
 | `EMAIL_REPLY_TO` | Monitored reply-capable address |
 | `INVESTOR_EMAIL_ALLOWLIST` | Comma-separated exact founder/investor emails |
@@ -298,6 +328,18 @@ changing them requires a redeploy. Blank, malformed, `.example`, `pending`, or
 `RENDER_EXTERNAL_URL` is supplied by Render. When a custom domain is attached,
 set `PUBLIC_APP_URL` to its exact HTTPS origin and redeploy.
 
+The Blueprint pins these non-secret AI defaults:
+
+```text
+AI_EVIDENCE_BASE_URL=https://api.featherless.ai/v1
+AI_EVIDENCE_MODEL=Qwen/Qwen3-VL-8B-Instruct
+AI_EVIDENCE_VERIFIER_MODEL=Qwen/Qwen3-VL-8B-Instruct
+AI_EVIDENCE_TIMEOUT_MS=20000
+```
+
+Changing either model requires a fresh synthetic evaluation. The verifier model
+may be blank in `.env.local`, in which case it uses the extraction model.
+
 ### Blueprint-fixed safety values
 
 ```text
@@ -316,30 +358,36 @@ new security review.
 
 ## Deployment status and remaining operator work
 
-The code is Render-ready and pushed. The deployment itself is not yet live.
-The next developer or founder must:
+The pre-AI Render baseline is pushed. The current hackathon AI change must pass
+the full preflight, receive a real synthetic provider evaluation, be committed,
+and be pushed before deployment. The deployment itself is not yet live. The
+next developer or founder must:
 
 1. Apply the $50 promotion to the intended Render workspace under
    **Billing -> Credit Balance** and record its expiration.
-2. Add and verify a Resend sending domain or subdomain.
-3. Create a restricted Resend sending key and store it outside Git.
-4. Collect the exact founder and investor email allowlist.
-5. Supply truthful company/operator, jurisdiction, and monitored contact
+2. Create a dedicated Featherless API key, keep the pinned model pair, and run
+   the real synthetic AI evaluation.
+3. Add and verify a Resend sending domain or subdomain.
+4. Create a restricted Resend sending key and store it outside Git.
+5. Collect the exact founder and investor email allowlist.
+6. Supply truthful company/operator, jurisdiction, and monitored contact
    values. These are configuration, not missing application code.
-6. In Render, choose **New -> Blueprint**, connect this repository, select
+7. In Render, choose **New -> Blueprint**, connect this repository, select
    `main`, and apply `render.yaml`.
-7. Enter every `sync: false` value before the initial build.
-8. Wait for `npm run db:migrate`, the web deployment, and cron provisioning.
-9. Check `/api/v1/live`, then require `/api/v1/health` to return HTTP 200 with
+8. Enter every `sync: false` value before the initial build.
+9. Wait for `npm run db:migrate`, the web deployment, and cron provisioning.
+10. Check `/api/v1/live`, then require `/api/v1/health` to return HTTP 200 with
    every configuration flag and `launch_ready` set to `true`.
-10. Perform every public-URL smoke test in `DEPLOYMENT.md`, including two-user
+11. Perform every public-URL smoke test in `DEPLOYMENT.md`, including a new
+    synthetic consented AI upload, explicit abstention, two-user
     cross-account isolation, reset reuse/session revocation, report integrity,
     verified deletion, retention trigger, restart persistence, and log review.
-11. Monitor Render credit, unbilled usage, database disk, web health, Resend
-    delivery, and cron results throughout the demo.
-12. After the demo, delete application cases/accounts, trigger retention,
-    delete the web/cron/database resources, revoke the Resend key, and confirm
-    no unbilled resource remains.
+12. Monitor Render credit, unbilled usage, database disk, web health,
+    Featherless inference, Resend delivery, and cron results throughout the
+    demo.
+13. After the demo, delete application cases/accounts, trigger retention,
+    delete the web/cron/database resources, revoke both API keys, and confirm no
+    unbilled resource remains.
 
 ### Clarifications from the prior hosting discussion
 
@@ -347,7 +395,8 @@ The next developer or founder must:
   runtime.
 - Netlify was considered earlier and is not the selected deployment target.
 - Vercel Blob and S3-style object storage are not used in the final demo stack.
-- “Only API keys remain” is not literally complete: the code is complete, but
+- “Only API keys remain” is not literally complete: operator configuration,
+  real provider evaluation, truthful
   truthful operator/legal identity, contacts, investor allowlist, sender/DNS
   configuration, deployment, and smoke testing still require human input.
 - “No hardcoded data” means no hardcoded production user/case records. Fixed,
@@ -366,8 +415,9 @@ expiry, a required payment method, and usage remain operator responsibilities.
 
 ## Known limits and work before a public launch
 
-No code blocker remains for the narrowly scoped investor demo. The following
-are real launch gates before unrestricted public handling of immigration,
+No known code blocker remains for the synthetic hackathon path, but a real
+provider run has not been claimed without an API key. The following are real
+launch gates before unrestricted public handling of immigration,
 payroll, identity, medical, banking, or family records:
 
 - independent penetration testing and remediation;
@@ -384,7 +434,9 @@ payroll, identity, medical, banking, or family records:
 - dependency/runtime scanning in CI and release-by-release audits;
 - capacity, load, cost, and PostgreSQL disk/autovacuum testing; and
 - reconsideration of dedicated object storage before materially larger traffic
-  or record volume.
+  or record volume; and
+- provider/model licensing, retention, data-location, DPA/consent review, and an
+  independent AI evaluation before any real-record inference.
 
 Do not describe the current build as compliant, certified, independently
 audited, malware-safe, or ready for unrestricted public real-record use.
@@ -400,6 +452,8 @@ audited, malware-safe, or ready for unrestricted public real-record use.
 | Accounts and password recovery | `lib/accounts.ts`, `lib/email.ts`, `app/api/auth/` |
 | Identity/CSRF/runtime flags | `lib/identity.ts`, `lib/security.ts`, `lib/runtime-flags.ts`, `proxy.ts` |
 | Upload and extraction | `app/api/v1/cases/[caseId]/uploads/route.ts`, `lib/extraction.ts` |
+| AI input/orchestration | `lib/ai-evidence-input.ts`, `lib/ai-evidence.ts` |
+| AI evaluation | `docs/AI_EVALUATION.md`, `scripts/run-ai-evaluation.ts`, `tests/ai-evals/` |
 | Deterministic analysis | `lib/rules.ts`, `lib/case-workflow.ts` |
 | Reports | `lib/report.ts`, `app/api/v1/cases/[caseId]/reports/` |
 | Limits and retention | `lib/product-config.ts`, `scripts/retention-sweep.ts` |
@@ -431,6 +485,17 @@ npm audit --omit=dev
 git diff --check
 ```
 
+The normal preflight runs the AI scorer unit tests but never calls a provider or
+claims a benchmark. With a dedicated key and synthetic data only, create a real
+prediction artifact explicitly:
+
+```bash
+npm run ai:evaluate -- --predictions /tmp/wageshield-ai-predictions.json
+```
+
+Score and inspect it using `docs/AI_EVALUATION.md`; do not commit a key, raw
+provider envelope, or manually edited result.
+
 Database migrations are append-only:
 
 1. Edit `db/schema.ts`.
@@ -439,7 +504,7 @@ Database migrations are append-only:
 4. Run `npm run db:check` and the full preflight.
 5. Never rewrite a migration that may have reached a shared database.
 
-Never commit `.env.local`, a Resend key, a Render connection URL, reset token,
+Never commit `.env.local`, an AI/Resend key, a Render connection URL, reset token,
 session cookie, private record, or investor email list. Use generated synthetic
 records for automated and local tests.
 
@@ -459,7 +524,14 @@ explicitly reviewed product/security redesign:
 - exposes a public document or report URL;
 - trusts forwarded identity on a directly reachable Render service;
 - makes missing investor allowlist configuration enable public registration;
-- lets parser output become `CONFIRMED` or automatically trigger analysis;
+- lets parser or AI output become `CONFIRMED` or automatically trigger analysis;
+- invokes AI without explicit per-upload consent;
+- sends a complete raw PDF, more than the bounded page set, account identity,
+  case history, or a provider credential to the inference request;
+- lets document text alter a prompt policy, choose a model/endpoint, invoke a
+  tool, access storage, or run a rule;
+- accepts unsupported AI candidates without strict schema, page/excerpt, and
+  separate grounding checks;
 - lets rules consume unreviewed facts;
 - invents document/page/excerpt evidence for manual data;
 - stores full private response bodies in idempotency rows;
@@ -474,11 +546,13 @@ explicitly reviewed product/security redesign:
 ## Authoritative references inside the repository
 
 - Start with `README.md` for the product and local workflow.
-- Use `DEPLOYMENT.md` for exact Render, promotion, Resend, smoke-test, monitoring,
-  and teardown steps.
+- Use `DEPLOYMENT.md` for exact Render, Featherless, Resend, smoke-test,
+  monitoring, and teardown steps.
 - Use `SECURITY.md` for implemented controls and known limits.
 - Use `PRIVACY.md` and `TERMS.md` for operator/legal review notes.
 - Use `docs/ARCHITECTURE.md` and `docs/SPEC_DECISIONS.md` for technical and
   product-boundary rationale.
+- Use `docs/AI_EVALUATION.md` for the synthetic dataset, metric definitions,
+  run procedure, and honest result-reporting rules.
 
 This handoff intentionally contains no secret value and no real user record.

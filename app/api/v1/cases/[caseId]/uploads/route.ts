@@ -1,4 +1,12 @@
 import { z } from "zod";
+import {
+  AI_EVIDENCE_PROMPT_VERSION,
+  AI_EVIDENCE_VERIFIER_PROMPT_VERSION,
+  aiEvidenceConfiguration,
+  runAiEvidenceCopilot,
+  type AiEvidenceCopilotResult,
+} from "@/lib/ai-evidence";
+import { prepareAiEvidenceInput } from "@/lib/ai-evidence-input";
 import { authenticationRequired, errorResponse, internalError, notFound } from "@/lib/api";
 import { authenticateCaseRequest } from "@/lib/case-auth";
 import { invalidateDerivedResults, refreshDocumentReviewStatus } from "@/lib/case-workflow";
@@ -21,6 +29,8 @@ import {
   storeDocument,
 } from "@/lib/storage";
 import type {
+  AiDocumentExtraction,
+  AiEvidenceProvenance,
   DeductionObservation,
   DocumentRecord,
   EvidenceRef,
@@ -137,7 +147,138 @@ function deductionCategory(description: string): DeductionObservation["category"
   }
   if (/training|relocation/i.test(description)) return "TRAINING_OR_RELOCATION_REFERENCE";
   if (/early\s+departure/i.test(description)) return "EARLY_DEPARTURE_REFERENCE";
+  if (/business\s+expense|equipment|tools?|uniform|employer\s+expense/i.test(description)) {
+    return "EMPLOYER_BUSINESS_EXPENSE_REFERENCE";
+  }
   return "UNKNOWN";
+}
+
+function uniqueBy<Value>(values: Value[], keyFor: (value: Value) => string): Value[] {
+  const seen = new Set<string>();
+  return values.filter((value) => {
+    const key = keyFor(value);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function aiProvenance(
+  result: AiEvidenceCopilotResult,
+  candidate: {
+    candidate_id: string;
+    verifierReason: string;
+    verifiedPage: number;
+    verifiedExcerpt: string;
+  },
+): AiEvidenceProvenance {
+  return {
+    provider: result.provider,
+    model: result.model,
+    verifierModel: result.verifierModel,
+    promptVersion: result.promptVersion,
+    verifierPromptVersion: result.verifierPromptVersion,
+    runId: result.runId,
+    candidateId: candidate.candidate_id,
+    status: "VERIFIED",
+    verifierReason: candidate.verifierReason,
+    evidencePage: candidate.verifiedPage,
+    evidenceExcerpt: candidate.verifiedExcerpt,
+  };
+}
+
+async function requestedAiExtraction(
+  bytes: Uint8Array,
+  contentType: string,
+  documentType: DocumentRecord["type"],
+): Promise<{ result: AiEvidenceCopilotResult | null; metadata: AiDocumentExtraction }> {
+  const requestedAt = new Date().toISOString();
+  const configuration = aiEvidenceConfiguration();
+  const base = {
+    provider: configuration.provider,
+    model: configuration.model,
+    verifierModel: configuration.verifierModel,
+    promptVersion: AI_EVIDENCE_PROMPT_VERSION,
+    verifierPromptVersion: AI_EVIDENCE_VERIFIER_PROMPT_VERSION,
+    requestedAt,
+    deterministicFallbackUsed: true,
+  } as const;
+
+  if (!configuration.configured) {
+    return {
+      result: null,
+      metadata: {
+        ...base,
+        status: "UNAVAILABLE",
+        completedAt: new Date().toISOString(),
+        candidateCount: 0,
+        verifiedCount: 0,
+        rejectedCount: 0,
+        abstentionCount: 0,
+        warnings: [
+          "AI processing was requested but is not configured. No document content was sent externally; local extraction remains available.",
+        ],
+      },
+    };
+  }
+
+  let inputMode: AiDocumentExtraction["inputMode"];
+  try {
+    const prepared = await prepareAiEvidenceInput(bytes, contentType, documentType);
+    inputMode = prepared.inputMode;
+    const result = await runAiEvidenceCopilot(prepared);
+    const status: AiDocumentExtraction["status"] =
+      result.verifiedCount === 0
+        ? "ABSTAINED"
+        : result.verifiedCount === result.candidateCount && result.abstentionCount === 0
+          ? "VERIFIED"
+          : "PARTIAL";
+    const warnings = [...result.warnings];
+    for (const abstention of result.abstentions.slice(0, 8)) {
+      const reason = abstention.reasonCode.replaceAll("_", " ").toLocaleLowerCase("en-US");
+      const page = abstention.page ? ` on page ${abstention.page}` : "";
+      warnings.push(
+        `The ${abstention.stage.toLocaleLowerCase("en-US")} pass abstained${page}: ${reason}.`,
+      );
+    }
+    if (result.verifiedCount === 0) {
+      warnings.push(
+        "No AI candidate passed grounding verification. Local extraction or manual transcription remains available.",
+      );
+    }
+    return {
+      result,
+      metadata: {
+        ...base,
+        status,
+        runId: result.runId,
+        completedAt: new Date().toISOString(),
+        inputMode: result.inputMode,
+        candidateCount: result.candidateCount,
+        verifiedCount: result.verifiedCount,
+        rejectedCount: result.rejectedCount,
+        abstentionCount: result.abstentionCount,
+        warnings,
+      },
+    };
+  } catch {
+    return {
+      result: null,
+      metadata: {
+        ...base,
+        status: "FAILED",
+        completedAt: new Date().toISOString(),
+        inputMode,
+        candidateCount: 0,
+        verifiedCount: 0,
+        rejectedCount: 0,
+        abstentionCount: 0,
+        warnings: [
+          "AI processing did not complete, so no AI output was trusted. Local extraction or manual transcription remains available.",
+        ],
+      },
+    };
+  }
 }
 
 export async function POST(request: Request, context: Context) {
@@ -171,6 +312,7 @@ export async function POST(request: Request, context: Context) {
     const form = body.value;
     const file = form.get("file");
     const typeResult = TypeSchema.safeParse(form.get("document_type"));
+    const aiProcessingConsented = form.get("ai_processing_consent") === "accepted";
     if (!(file instanceof File) || !typeResult.success || file.size < 1) {
       return errorResponse(
         "INVALID_REQUEST",
@@ -265,14 +407,77 @@ export async function POST(request: Request, context: Context) {
       );
     }
 
-    const proposedWorksiteEvents = extraction.facts.filter(
+    const aiAttempt = aiProcessingConsented
+      ? await requestedAiExtraction(bytes.slice(), actualMime, typeResult.data)
+      : null;
+    const aiResult = aiAttempt?.result ?? null;
+
+    const factCandidates = uniqueBy(
+      [
+        ...(aiResult?.facts.map((candidate) => ({
+          id: crypto.randomUUID(),
+          type: candidate.type,
+          label: candidate.label,
+          rawValue: candidate.raw_value,
+          normalizedValue: candidate.normalized_value,
+          confidence: candidate.confidence,
+          page: candidate.verifiedPage,
+          evidenceText: candidate.verifiedExcerpt,
+          ai: aiProvenance(aiResult, candidate),
+        })) ?? []),
+        ...extraction.facts.map((candidate) => ({ ...candidate, ai: undefined })),
+      ],
+      (candidate) => `${candidate.type}:${candidate.normalizedValue.toLocaleLowerCase("en-US")}`,
+    );
+    const payPeriodCandidates = uniqueBy(
+      [
+        ...(aiResult?.payPeriods.map((candidate) => ({
+          id: crypto.randomUUID(),
+          start: candidate.start,
+          end: candidate.end,
+          payDate: candidate.pay_date,
+          ordinaryBaseCents: candidate.ordinary_base_cents,
+          grossCents: candidate.gross_cents,
+          confidence: candidate.confidence,
+          page: candidate.verifiedPage,
+          evidenceText: candidate.verifiedExcerpt,
+          ai: aiProvenance(aiResult, candidate),
+        })) ?? []),
+        ...extraction.payPeriods.map((candidate) => ({ ...candidate, ai: undefined })),
+      ],
+      (candidate) =>
+        `${candidate.start}:${candidate.end}:${candidate.ordinaryBaseCents}:${candidate.grossCents}`,
+    );
+    const deductionCandidates = uniqueBy(
+      [
+        ...(aiResult?.deductions.map((candidate) => ({
+          id: crypto.randomUUID(),
+          description: candidate.description,
+          amountCents: candidate.amount_cents,
+          date: candidate.date,
+          confidence: candidate.confidence,
+          page: candidate.verifiedPage,
+          evidenceText: candidate.verifiedExcerpt,
+          ai: aiProvenance(aiResult, candidate),
+        })) ?? []),
+        ...extraction.deductions.map((candidate) => ({ ...candidate, ai: undefined })),
+      ],
+      (candidate) =>
+        `${candidate.amountCents}:${candidate.description
+          .normalize("NFKC")
+          .replace(/\s+/g, " ")
+          .trim()
+          .toLocaleLowerCase("en-US")}`,
+    );
+
+    const proposedWorksiteEvents = factCandidates.filter(
       (candidate) => candidate.type === "CURRENT_WORKSITE",
     ).length;
     const structuredLimitExceeded =
-      caseData.facts.length + extraction.facts.length > API_POLICY.maximumFactsPerCase ||
-      caseData.payPeriods.length + extraction.payPeriods.length >
+      caseData.facts.length + factCandidates.length > API_POLICY.maximumFactsPerCase ||
+      caseData.payPeriods.length + payPeriodCandidates.length >
         API_POLICY.maximumPayPeriodsPerCase ||
-      caseData.deductions.length + extraction.deductions.length >
+      caseData.deductions.length + deductionCandidates.length >
         API_POLICY.maximumDeductionsPerCase ||
       caseData.events.length + proposedWorksiteEvents > API_POLICY.maximumEventsPerCase;
     if (structuredLimitExceeded) {
@@ -300,22 +505,30 @@ export async function POST(request: Request, context: Context) {
       synthetic: false,
       uploadedAt: now,
       objectKey: `private/cases/${caseData.id}/original/${documentId}/v1/source`,
-      note: "Validated, privately stored, and proposed values read from this file's text layer for your review.",
+      note: aiAttempt
+        ? "Validated and privately stored. AI-grounded and local proposals remain untrusted until you confirm or correct them."
+        : "Validated, privately stored, and proposed values read from this file's text layer for your review.",
       extraction: {
         method: extraction.method,
         characterCount: extraction.characterCount,
         proposedFactCount: extraction.facts.length,
         proposedPayPeriodCount: extraction.payPeriods.length,
         proposedDeductionCount: extraction.deductions.length,
-        warnings: extraction.warnings,
+        warnings:
+          aiResult && extraction.method === "IMAGE_REVIEW_REQUIRED"
+            ? [
+                "Local pixel extraction remains disabled. Separate opt-in AI proposals are shown with grounding provenance and still require your review.",
+              ]
+            : extraction.warnings,
         completedAt: now,
       },
+      ...(aiAttempt ? { aiExtraction: aiAttempt.metadata } : {}),
     };
     storedDocument = document;
     await storeDocument(caseData, document, buffer);
     caseData.documents.push(document);
 
-    const proposedFacts: FactRecord[] = extraction.facts.map((candidate) => ({
+    const proposedFacts: FactRecord[] = factCandidates.map((candidate) => ({
       id: `fact_${candidate.id}`,
       type: candidate.type,
       label: candidate.label,
@@ -331,12 +544,13 @@ export async function POST(request: Request, context: Context) {
         candidate.evidenceText,
         candidate.type.startsWith("LCA") ? "benchmark" : "context",
       ),
-      origin: "EXTRACTED",
+      origin: candidate.ai ? "AI_EXTRACTED" : "EXTRACTED",
       originalRawValue: candidate.rawValue,
+      ...(candidate.ai ? { aiProvenance: candidate.ai } : {}),
     }));
     caseData.facts.push(...proposedFacts);
 
-    const proposedPeriods: PayPeriod[] = extraction.payPeriods.map((candidate) => ({
+    const proposedPeriods: PayPeriod[] = payPeriodCandidates.map((candidate) => ({
       id: `period_${candidate.id}`,
       start: candidate.start,
       end: candidate.end,
@@ -355,10 +569,11 @@ export async function POST(request: Request, context: Context) {
         candidate.evidenceText,
         "observed",
       ),
+      ...(candidate.ai ? { aiProvenance: candidate.ai } : {}),
     }));
     caseData.payPeriods.push(...proposedPeriods);
 
-    const proposedDeductions: DeductionObservation[] = extraction.deductions.map((candidate) => ({
+    const proposedDeductions: DeductionObservation[] = deductionCandidates.map((candidate) => ({
       id: `deduction_${candidate.id}`,
       description: candidate.description,
       amountCents: candidate.amountCents,
@@ -375,6 +590,7 @@ export async function POST(request: Request, context: Context) {
         candidate.evidenceText,
         "observed",
       ),
+      ...(candidate.ai ? { aiProvenance: candidate.ai } : {}),
     }));
     caseData.deductions.push(...proposedDeductions);
 
@@ -402,6 +618,21 @@ export async function POST(request: Request, context: Context) {
       factCount: proposedFacts.length,
       payPeriodCount: proposedPeriods.length,
       deductionCount: proposedDeductions.length,
+      aiRequested: Boolean(aiAttempt),
+      ...(aiAttempt
+        ? {
+            aiStatus: aiAttempt.metadata.status,
+            aiProvider: aiAttempt.metadata.provider,
+            aiModel: aiAttempt.metadata.model,
+            aiVerifierModel: aiAttempt.metadata.verifierModel,
+            aiPromptVersion: aiAttempt.metadata.promptVersion,
+            aiVerifierPromptVersion: aiAttempt.metadata.verifierPromptVersion,
+            aiCandidateCount: aiAttempt.metadata.candidateCount,
+            aiVerifiedCount: aiAttempt.metadata.verifiedCount,
+            aiRejectedCount: aiAttempt.metadata.rejectedCount,
+            aiAbstentionCount: aiAttempt.metadata.abstentionCount,
+          }
+        : {}),
     });
     return jsonResponse({ document, extraction: document.extraction, case: caseData }, { status: 201 });
   } catch (error) {

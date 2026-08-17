@@ -329,6 +329,15 @@ export async function generateReportPdf(
   if (!findings.length) throw new Error("Select at least one finding for the report");
   const selectedCorrections = correctionsForSelectedFindings(caseData, findings);
   const redact = createTextRedactor(caseData, options);
+  const selectedEvidenceIds = new Set(
+    findings.flatMap((finding) => finding.evidence.map((item) => item.id)),
+  );
+  const selectedRecords = [
+    ...caseData.facts,
+    ...caseData.payPeriods,
+    ...caseData.deductions,
+  ].filter((record) => selectedEvidenceIds.has(record.evidence.id));
+  const usesAiProposals = selectedRecords.some((record) => record.aiProvenance);
 
   const generatedAt = new Date().toISOString();
   const redactions = [
@@ -487,6 +496,12 @@ export async function generateReportPdf(
     state,
     "Methodology: WageShield uses reviewed structured facts and versioned, deterministic rules for money, date, tolerance, and status logic. Official-source text supplies general context only. The application does not infer an employer's internal actual-wage records, determine an immigration outcome, or calculate a legally owed amount.",
   );
+  if (usesAiProposals) {
+    paragraph(
+      state,
+      "AI provenance: one or more selected values began as model-proposed document evidence, passed a separate citation-grounding check, and were then confirmed or corrected by a person. AI output never determines a finding; all finding statuses and calculations in this packet come from the versioned deterministic rule engine.",
+    );
+  }
   paragraph(
     state,
     "Redaction method: this PDF is reconstructed from an allowlist of selected structured fields and excerpts. Original document layers are never copied into the report, so excluded content is absent rather than visually covered.",

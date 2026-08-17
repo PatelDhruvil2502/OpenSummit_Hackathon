@@ -5,6 +5,7 @@ import { companyDetailsArePlaceholders } from "@/lib/company";
 import { signupAccessIsConfigured } from "@/lib/accounts";
 import { emailIsConfigured } from "@/lib/email";
 import { publicAppOrigin } from "@/lib/runtime-flags";
+import { aiEvidenceIsConfigured } from "@/lib/ai-evidence";
 
 const SUCCESS_CACHE_MS = 60 * 1000;
 const FAILURE_CACHE_MS = 15 * 1000;
@@ -43,6 +44,7 @@ export async function GET() {
       password_email_configured: emailIsConfigured(),
       public_app_url_configured: Boolean(publicAppOrigin()),
       signup_access_configured: signupAccessIsConfigured(),
+      ai_evidence_configured: aiEvidenceIsConfigured(),
     };
     return jsonResponse({
       status: "ok",

@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 
 const SITE_TITLE = "WageShield H-1B | Evidence first. Human reviewed.";
 const SITE_DESCRIPTION =
-  "A privacy-first evidence auditor for H-1B workers that compares employment records using transparent, deterministic checks.";
+  "An evidence-grounded AI auditor for H-1B workers: models propose and verify cited facts, people confirm them, and transparent code performs every comparison.";
 
 export function generateMetadata(): Metadata {
   // The production origin comes from a trusted environment value, never the

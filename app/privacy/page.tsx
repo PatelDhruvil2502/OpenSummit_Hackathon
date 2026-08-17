@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ArrowLeft, Clock3, Database, EyeOff, FolderLock, Mail, Trash2 } from "lucide-react";
+import { ArrowLeft, Clock3, Database, EyeOff, FolderLock, Mail, Sparkles, Trash2 } from "lucide-react";
 import { SiteHeader } from "@/components/site-header";
 import { COMPANY, companyDetailsArePlaceholders } from "@/lib/company";
 import { RETENTION_POLICY } from "@/lib/product-config";
@@ -47,7 +47,29 @@ export default function PrivacyPage() {
             <li>Case settings, the structured facts you reviewed, your corrections, generated findings, and report selections.</li>
             <li>Documents you upload and reports you generate, in private object storage under random case-scoped keys.</li>
             <li>Operational audit events containing opaque IDs, file size and type, stage names, counts, rule version, and timestamps.</li>
+            <li>When you request AI review, the case stores the provider/model, prompt versions, opaque run and candidate IDs, verifier decision, and cited page—not the provider API key.</li>
           </ul>
+        </article>
+
+        <article className="legal-card">
+          <span className="legal-card-icon"><Sparkles size={19} /></span>
+          <h2>Optional AI evidence review</h2>
+          <p>
+            AI processing is off for an upload unless you explicitly select it. When selected, a
+            bounded set of document pages and the declared document type are sent to the configured
+            Featherless inference API for extraction and a separate grounding check. WageShield does
+            not separately add your account email, password, case ID, or existing case history, but
+            the selected pages naturally include whatever information appears in the document.
+          </p>
+          <p>
+            Featherless states that API prompts and completions are processed in real time and are
+            not logged or stored on its servers. Review its{" "}
+            <a href="https://featherless.ai/docs/privacy-and-logging" target="_blank" rel="noreferrer">
+              current privacy and logging documentation
+            </a>{" "}
+            before opting in. WageShield does not use evidence or model output to train a model.
+            Leave the option unchecked to use only local text parsing and manual review.
+          </p>
         </article>
 
         <article className="legal-card">

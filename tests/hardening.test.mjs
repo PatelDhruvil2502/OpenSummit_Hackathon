@@ -211,7 +211,7 @@ test("email signup and signin persist an account in PostgreSQL and isolate cases
     .bind("local@example.test")
     .first();
   assert.match(consent?.policy_accepted_at ?? "", /^\d{4}-\d{2}-\d{2}T/);
-  assert.equal(consent?.policy_version, "1.0");
+  assert.equal(consent?.policy_version, "1.1");
 
   const authenticated = await local.request("/api/v1/cases");
   assert.equal(authenticated.status, 200);

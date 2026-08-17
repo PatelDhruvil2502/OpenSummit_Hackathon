@@ -45,6 +45,55 @@ export type DocumentType =
 
 export type ReviewStatus = "CONFIRMED" | "USER_CORRECTED" | "NEEDS_REVIEW";
 
+/**
+ * Evidence-model output is always a proposal. A VERIFIED status means a
+ * separate grounding pass found support in the cited page; it never means that
+ * WageShield or the model has established the value as true. A person must
+ * still confirm or correct every proposal before deterministic rules can use it.
+ */
+export type AiEvidenceRunStatus =
+  | "NOT_REQUESTED"
+  | "UNAVAILABLE"
+  | "FAILED"
+  | "VERIFIED"
+  | "PARTIAL"
+  | "ABSTAINED";
+
+export type AiEvidenceInputMode = "IMAGE" | "PDF_RENDERED_PAGES" | "PDF_TEXT";
+
+export interface AiEvidenceProvenance {
+  provider: string;
+  model: string;
+  verifierModel: string;
+  promptVersion: string;
+  verifierPromptVersion: string;
+  runId: string;
+  candidateId: string;
+  status: "VERIFIED";
+  verifierReason: string;
+  evidencePage: number;
+  evidenceExcerpt: string;
+}
+
+export interface AiDocumentExtraction {
+  status: AiEvidenceRunStatus;
+  provider: string;
+  model: string;
+  verifierModel: string;
+  promptVersion: string;
+  verifierPromptVersion: string;
+  runId?: string;
+  requestedAt: string;
+  completedAt: string;
+  inputMode?: AiEvidenceInputMode;
+  candidateCount: number;
+  verifiedCount: number;
+  rejectedCount: number;
+  abstentionCount: number;
+  deterministicFallbackUsed: boolean;
+  warnings: string[];
+}
+
 export interface EvidenceRef {
   id: string;
   documentId: string;
@@ -128,6 +177,7 @@ export interface DocumentRecord {
     warnings: string[];
     completedAt: string;
   };
+  aiExtraction?: AiDocumentExtraction;
 }
 
 export interface FactRecord {
@@ -141,10 +191,11 @@ export interface FactRecord {
   reviewStatus: ReviewStatus;
   affects: FindingModule[];
   evidence: EvidenceRef;
-  origin?: "FIXTURE" | "EXTRACTED" | "USER_ENTERED";
+  origin?: "FIXTURE" | "EXTRACTED" | "AI_EXTRACTED" | "USER_ENTERED";
   originalRawValue?: string;
   reviewedAt?: string;
   userEditedAt?: string;
+  aiProvenance?: AiEvidenceProvenance;
 }
 
 export interface PayPeriod {
@@ -161,6 +212,7 @@ export interface PayPeriod {
   sourceDocumentId?: string;
   reviewedAt?: string;
   evidence: EvidenceRef;
+  aiProvenance?: AiEvidenceProvenance;
 }
 
 export interface DeductionObservation {
@@ -181,6 +233,7 @@ export interface DeductionObservation {
   sourceDocumentId?: string;
   reviewedAt?: string;
   evidence: EvidenceRef;
+  aiProvenance?: AiEvidenceProvenance;
 }
 
 export interface ReportRecord {

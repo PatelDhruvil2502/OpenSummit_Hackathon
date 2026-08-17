@@ -86,7 +86,7 @@ test("data export is authenticated, portable, and omits storage-only fields", as
   const payload = JSON.parse(text);
   assert.equal(payload.exportVersion, "1.0");
   assert.equal(payload.account.email, "export-owner@example.test");
-  assert.equal(payload.account.policyAcceptance.version, "1.0");
+  assert.equal(payload.account.policyAcceptance.version, "1.1");
   assert.match(payload.account.policyAcceptance.acceptedAt, /^\d{4}-\d{2}-\d{2}T/);
   assert.ok(payload.cases.some((item) => item.id === review.id));
   assert.doesNotMatch(text, /ownerUserId|objectKey|passwordHash|tokenHash/);

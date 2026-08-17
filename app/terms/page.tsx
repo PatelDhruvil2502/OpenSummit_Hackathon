@@ -13,7 +13,7 @@ const SECTIONS: Array<{ heading: string; body: string[] }> = [
   {
     heading: "1. What this service is",
     body: [
-      `${COMPANY.productName} is a document-organization tool. You upload employment records you are authorized to possess, review the values it extracts, and it runs fixed, published comparisons between those values. It produces an evidence packet you can share with someone you trust.`,
+      `${COMPANY.productName} is a document-organization tool. With your separate choice for each upload, an AI model may propose evidence-linked values and a second model pass may check the cited page. You review those values, and fixed published code compares only what you confirm. It produces an evidence packet you can share with someone you trust.`,
       "It is a records tool, not a decision-maker.",
     ],
   },
@@ -30,6 +30,7 @@ const SECTIONS: Array<{ heading: string; body: string[] }> = [
     body: [
       "You confirm that you are authorized to possess and upload every record you submit, and that uploading it does not breach a contract, court order, or law that applies to you.",
       "You are responsible for verifying every extracted value against the original document before relying on it. The product shows you the source excerpt for each value specifically so you can check it.",
+      "Selecting AI evidence review authorizes transmission of the selected document's bounded page images or text to the configured inference provider for that upload. Do not select it unless you are authorized to make that transfer and have reviewed the privacy policy.",
       "You must not upload another person's records without their authorization, use the service to harass anyone, or attempt to circumvent its access controls, rate limits, or storage quotas.",
       "You must keep your password confidential. Anyone holding it can read every review in your account.",
     ],

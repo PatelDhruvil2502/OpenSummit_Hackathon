@@ -5,6 +5,9 @@ const developmentEvalSource = process.env.NODE_ENV === "development" ? " 'unsafe
 const nextConfig: NextConfig = {
   agentRules: false,
   poweredByHeader: false,
+  // Keep the native image renderer as a Node dependency in Render rather than
+  // asking the Next bundler to rewrite its platform-specific binary loader.
+  serverExternalPackages: ["@napi-rs/canvas"],
   turbopack: {
     root: process.cwd(),
   },

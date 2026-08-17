@@ -10,17 +10,20 @@
     "build": "next build",
     "start": "next start --hostname 0.0.0.0 --port ${PORT:-3000}",
     "retention:sweep": "tsx --env-file-if-exists=.env.local scripts/retention-sweep.ts",
-    "test": "npm run test:unit && npm run test:integration",
+    "test": "npm run test:unit && npm run test:ai-eval-scorer && npm run test:integration",
     "test:unit": "node --import tsx --test lib/*.test.ts",
+    "test:ai-eval-scorer": "node --test tests/ai-evals/*.test.mjs",
     "test:integration": "npm run build && node scripts/run-integration-tests.mjs",
+    "ai:evaluate": "tsx --env-file-if-exists=.env.local scripts/run-ai-evaluation.ts --gold tests/ai-evals/gold.json",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate --config=drizzle.config.ts",
     "db:check": "drizzle-kit check --config=drizzle.config.ts",
     "db:migrate": "tsx --env-file-if-exists=.env.local db/migrate.ts",
-    "preflight": "npm run lint && npm run typecheck && npm run db:check && npm test"
+    "preflight": "npm run lint && npm run typecheck && npm run db:check && npm run test:unit && npm run test:ai-eval-scorer && npm run test:integration"
   },
   "dependencies": {
+    "@napi-rs/canvas": "1.0.6",
     "drizzle-orm": "0.45.2",
     "lucide-react": "^1.31.0",
     "next": "^16.3.1",
